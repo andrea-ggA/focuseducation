@@ -431,7 +431,7 @@ serve(async (req) => {
         status: "processing", progress_message: "Avvio in background…",
       }).eq("id", jobId);
 
-      EdgeRuntime.waitUntil((async () => {
+      (globalThis as any).EdgeRuntime?.waitUntil((async () => {
         try {
           const r = await fetch(`${supabaseUrl}/functions/v1/generate-study-content`, {
             method: "POST",

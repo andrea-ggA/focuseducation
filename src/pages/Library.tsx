@@ -460,10 +460,10 @@ const Library = () => {
 
                 <TabsContent value="riassunti">
                   {filteredSummaries.length === 0 ? (
-                    <EmptyState icon={FileText} text="Nessun riassunto generato. Genera il tuo primo riassunto, schema o appunti smart in Studio AI!" onNavigate={() => navigate("/study")} />
                     searchQuery
                       ? <p className="text-center text-muted-foreground py-8 text-sm">Nessun riassunto corrisponde a &quot;{searchQuery}&quot;</p>
                       : <EmptyState icon={FileText} text="Nessun riassunto generato. Genera il tuo primo riassunto, schema o appunti smart in Studio AI!" onNavigate={() => navigate("/study")} />
+                  ) : (
                     <>
                       <SelectionToolbar
                         selected={selectedSummaries} items={filteredSummaries}

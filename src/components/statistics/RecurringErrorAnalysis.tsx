@@ -55,8 +55,8 @@ export default function RecurringErrorAnalysis() {
 
       // Aggregate by topic
       const topicCounts: Record<string, number> = {};
-      for (const row of wrongAnswers) {
-        const t = row.topic || "Generale";
+      for (const row of wrongAnswers as any[]) {
+        const t = (row as any).topic || "Generale";
         topicCounts[t] = (topicCounts[t] || 0) + 1;
       }
       const topicSummary = Object.entries(topicCounts)

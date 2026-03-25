@@ -14,8 +14,6 @@ interface Job {
   title:            string | null;
   total_items:      number | null;
   error:            string | null;
-  progress_message: string | null;  // FIX: dedicate progress field
-  progress_pct:     number | null;
   created_at:       string;
 }
 

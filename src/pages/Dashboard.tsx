@@ -175,9 +175,8 @@ const Dashboard = () => {
     if (quizzesTodayRes.count != null) setQuizzesToday(quizzesTodayRes.count);
     if (tasksTotalRes.count != null)    setTasksTotalToday(tasksTotalRes.count);
     if (tasksCompletedRes.count != null) setTasksCompletedToday(tasksCompletedRes.count);
-    if (studyPlanRes.data?.plan_data) setStudyPlanData(studyPlanRes.data.plan_data);
+    // studyPlanRes and dueCountRes are loaded in fetchData, not here
     setStudyPlanLoaded(true);
-    if (typeof dueCountRes.data === "number") setDashboardDueCount(dueCountRes.data);
   };
 
   const fetchData = async () => {

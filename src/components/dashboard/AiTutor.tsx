@@ -7,6 +7,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { streamTutorChat, getAuthToken } from "@/lib/backendApi";
 import { useCredits, CREDIT_COSTS } from "@/hooks/useCredits";
 import { useSubscription } from "@/hooks/useSubscription";
+import { useToast } from "@/hooks/use-toast";
 import ReactMarkdown from "react-markdown";
 import * as pdfjsLib from "pdfjs-dist";
 import mammoth from "mammoth";

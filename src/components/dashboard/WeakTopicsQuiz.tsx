@@ -48,10 +48,21 @@ export default function WeakTopicsQuiz({ onStartQuiz }: WeakTopicsQuizProps) {
 
       if (!data || data.length === 0) { setLoading(false); return; }
 
-      // Aggregate by topic
+      // Aggregate by topic — topic comes from quiz_questions via question_id
+      // Since topic is not on user_question_progress, we fetch questions separately
+      const questionIds = [...new Set(data.map((r: any) => r.question_id))];
+      const { data: questionsData } = await supabase
+        .from("quiz_questions")
+        .select("id, topic")
+        .in("id", questionIds);
+      const topicMap: Record<string, string> = {};
+      for (const q of (questionsData || []) as any[]) {
+        topicMap[q.id] = q.topic || "Generale";
+      }
+
       const topicStats: Record<string, { wrong: number; total: number; wrongIds: string[] }> = {};
-      for (const row of data) {
-        const t = row.topic || "Generale";
+      for (const row of data as any[]) {
+        const t = topicMap[row.question_id] || "Generale";
         if (!topicStats[t]) topicStats[t] = { wrong: 0, total: 0, wrongIds: [] };
         topicStats[t].total++;
         if (!row.is_correct) {

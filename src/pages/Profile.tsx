@@ -64,12 +64,11 @@ const Profile = () => {
   useEffect(() => {
     if (!user) return;
     supabase.from("profiles")
-      .select("leaderboard_opt_in, leaderboard_nickname")
+      .select("leaderboard_visible")
       .eq("user_id", user.id).maybeSingle()
       .then(({ data }) => {
         if (data) {
-          setLeaderboardOptIn(!!(data as any).leaderboard_opt_in);
-          setLeaderboardNick((data as any).leaderboard_nickname || "");
+          setLeaderboardOptIn(!!(data as any).leaderboard_visible);
         }
       });
   }, [user]);

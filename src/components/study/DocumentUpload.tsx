@@ -515,7 +515,9 @@ ${textContent}`, token);
 
       // Call external backend
       let data: any;
-      if (file && inputMode === "file") {
+      if (file && inputMode === "file" && textContent.trim()) {
+        data = await generateFromText(format, textContent, token);
+      } else if (file && inputMode === "file") {
         data = await generateFromFile(file, format, token);
       } else if (hasImages && !textContent.trim()) {
         data = await generateFromFile(images[0].file, format, token);

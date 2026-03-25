@@ -417,10 +417,10 @@ const Library = () => {
 
                 <TabsContent value="mappe">
                   {filteredMaps.length === 0 ? (
-                    <EmptyState icon={Map} text="Nessuna mappa concettuale. Generane una dalla sezione Mappe Concettuali!" onNavigate={() => navigate("/study")} />
                     searchQuery
                       ? <p className="text-center text-muted-foreground py-8 text-sm">Nessuna mappa corrisponde a &quot;{searchQuery}&quot;</p>
                       : <EmptyState icon={Map} text="Nessuna mappa concettuale. Generane una dalla sezione Mappe Concettuali!" onNavigate={() => navigate("/study")} />
+                  ) : (
                     <>
                       <SelectionToolbar
                         selected={selectedMaps} items={filteredMaps}

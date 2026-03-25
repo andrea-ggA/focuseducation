@@ -109,11 +109,11 @@ Sii CONCRETO e BREVE. Usa emoji. In italiano. Max 500 parole.`,
           { id:8, title:"Simulazione esame",             description:"Rispondi a domande a tempo senza aiuti",          duration:"30 min", type:"quiz" as const,    completed:false },
         ].slice(0, hoursAvailable<=12 ? 5 : 8);
         setSteps(builtSteps);
-        const { data: session } = await supabase.from("crisis_sessions").insert({
-          user_id: user.id, exam_subject: subject, hours_available: hoursAvailable,
-          plan_content: { advice: content, steps: builtSteps }, total_steps: builtSteps.length,
+        const { data: session } = await supabase.from("crisis_sessions").insert([{
+          user_id: user.id, exam_subject: subject as string, hours_available: hoursAvailable,
+          plan_content: { advice: content, steps: builtSteps } as any, total_steps: builtSteps.length,
           expires_at: new Date(Date.now()+hoursAvailable*3_600_000).toISOString(),
-        }).select("id").single();
+        }]).select("id").single();
         if (session) setSessionId(session.id);
       } else {
         toast({ title:"Errore", description: funcErr?.message || "Riprova tra un momento.", variant:"destructive" });

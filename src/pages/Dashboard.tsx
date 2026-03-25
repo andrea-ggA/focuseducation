@@ -200,7 +200,8 @@ const Dashboard = () => {
       supabase.rpc("count_due_cards", { _user_id: user!.id }),
     ]);
     if (tasksRes.data) setTasks(tasksRes.data);
-    if (profileRes.data) setProfile(profileRes.data);
+    // Graceful fallback: if profile doesn't exist yet (new user), use defaults
+    setProfile(profileRes.data ?? { full_name: null, streak_count: 0, onboarding_completed: false });
     if (focusTodayRes.data) setTotalFocusMinutes(focusTodayRes.data.reduce((sum, s) => sum + (s.duration_minutes || 0), 0));
     if (focusAllRes.data) setTotalFocusAllTime(focusAllRes.data.reduce((sum, s) => sum + (s.duration_minutes || 0), 0));
     if (completedTasksRes.count != null) setTotalCompletedTasks(completedTasksRes.count);

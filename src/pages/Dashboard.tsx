@@ -350,7 +350,7 @@ const Dashboard = () => {
         <CreditLowAlert />
         <CrisisSuggestBanner onActivate={() => setShowCrisisMode(true)} />
 
-        {/* Exam Countdown + Due Cards + Focus Score */}}
+        {/* Exam Countdown + Due Cards + Focus Score */}
         <div className="space-y-3 mb-6">
           {loading
             ? <div className="bg-card rounded-xl border border-border p-4 flex items-center gap-4">

@@ -87,7 +87,7 @@ Deno.serve(async (req) => {
         status: "processing", progress_message: "Avvio in background…",
       }).eq("id", jobId);
 
-      EdgeRuntime.waitUntil((async () => {
+      (globalThis as any).EdgeRuntime?.waitUntil((async () => {
         try {
           const r = await fetch(`${supabaseUrl}/functions/v1/generate-summary`, {
             method: "POST",
@@ -294,7 +294,7 @@ REGOLE:
 
     if (!finalContent) throw new Error("Contenuto vuoto generato dall'AI.");
 
-    const docTitle = title || { summary: "Riassunto", outline: "Schema", smart_notes: "Appunti Smart" }[format] || "Documento";
+    const docTitle = title || ({ summary: "Riassunto", outline: "Schema", smart_notes: "Appunti Smart" } as Record<string, string>)[format] || "Documento";
 
     const { data: saved, error: saveErr } = await supabase.from("generated_content").insert({
       user_id:      authUser.id,

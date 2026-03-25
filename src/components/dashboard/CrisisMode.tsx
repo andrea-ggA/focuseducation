@@ -44,7 +44,7 @@ export default function CrisisMode({ open, onClose }: CrisisModeProps) {
       .maybeSingle()
       .then(({ data }) => {
         if (data && data.plan_content) {
-          const plan = data.plan_content as { advice: string; steps: SprintStep[] };
+          const plan = data.plan_content as unknown as { advice: string; steps: SprintStep[] };
           if (plan.steps?.length > 0) {
             setSteps(plan.steps);
             setAdvice(plan.advice || "");

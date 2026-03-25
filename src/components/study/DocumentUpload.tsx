@@ -354,7 +354,11 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
 
       // Call external backend
       let data: any;
-      if (file && inputMode === "file") {
+      if (file && inputMode === "file" && textContent.trim()) {
+        // Text already extracted client-side from PDF/DOCX — use text path
+        data = await generateFromText(type, `[LIVELLO_DISTRAZIONE:${distractionLevel}]\n${textContent}`, token);
+      } else if (file && inputMode === "file") {
+        // Image-only file (no extracted text) — send raw file
         data = await generateFromFile(file, type, token);
       } else if (hasImages && !textContent.trim()) {
         // FIX: passare tutte le immagini — la prima viene usata come file principale
@@ -511,7 +515,9 @@ ${textContent}`, token);
 
       // Call external backend
       let data: any;
-      if (file && inputMode === "file") {
+      if (file && inputMode === "file" && textContent.trim()) {
+        data = await generateFromText(format, textContent, token);
+      } else if (file && inputMode === "file") {
         data = await generateFromFile(file, format, token);
       } else if (hasImages && !textContent.trim()) {
         data = await generateFromFile(images[0].file, format, token);

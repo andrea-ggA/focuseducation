@@ -183,7 +183,7 @@ const Dashboard = () => {
     const today = new Date().toISOString().split("T")[0];
     const [tasksRes, profileRes, focusTodayRes, focusAllRes, completedTasksRes, energyRes, quizzesTodayRes, tasksTotalRes, tasksCompletedRes, studyPlanRes, dueCountRes] = await Promise.all([
       supabase.from("tasks").select("id, title, completed, estimated_minutes, priority").eq("user_id", user!.id).order("created_at", { ascending: false }).limit(20),
-      supabase.from("profiles").select("full_name, streak_count, onboarding_completed").eq("user_id", user!.id).single(),
+      supabase.from("profiles").select("full_name, streak_count, onboarding_completed").eq("user_id", user!.id).maybeSingle(),
       supabase.from("focus_sessions").select("duration_minutes").eq("user_id", user!.id).eq("completed", true).gte("started_at", `${today}T00:00:00`),
       supabase.from("focus_sessions").select("duration_minutes").eq("user_id", user!.id).eq("completed", true),
       supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user!.id).eq("completed", true),

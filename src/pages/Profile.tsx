@@ -50,8 +50,7 @@ const Profile = () => {
   const [examSubjectEdit, setExamSubjectEdit] = useState("");
   const [examDateEdit, setExamDateEdit]       = useState("");
   const [savingExam, setSavingExam]           = useState(false);
-  const [leaderboardOptIn, setLeaderboardOptIn] = useState(false);
-  const [leaderboardNick, setLeaderboardNick]   = useState("");
+  const [leaderboardOptIn, setLeaderboardOptIn] = useState(true);
   const [savingLeaderboard, setSavingLeaderboard] = useState(false);
 
   // Sync exam fields when examInfo loads
@@ -64,12 +63,11 @@ const Profile = () => {
   useEffect(() => {
     if (!user) return;
     supabase.from("profiles")
-      .select("leaderboard_opt_in, leaderboard_nickname")
+      .select("leaderboard_visible")
       .eq("user_id", user.id).maybeSingle()
       .then(({ data }) => {
         if (data) {
-          setLeaderboardOptIn(!!(data as any).leaderboard_opt_in);
-          setLeaderboardNick((data as any).leaderboard_nickname || "");
+          setLeaderboardOptIn(!!(data as any).leaderboard_visible);
         }
       });
   }, [user]);
@@ -86,11 +84,10 @@ const Profile = () => {
     if (!user) return;
     setSavingLeaderboard(true);
     await supabase.from("profiles").update({
-      leaderboard_opt_in: leaderboardOptIn,
-      leaderboard_nickname: leaderboardNick || null,
+      leaderboard_visible: leaderboardOptIn,
     } as any).eq("user_id", user.id);
     setSavingLeaderboard(false);
-    toast({ title: "Preferenze classifica salvate!" });
+    toast({ title: leaderboardOptIn ? "Ora sei visibile in classifica!" : "Sei stato rimosso dalla classifica." });
   };
 
   const loadProfile = async () => {
@@ -246,16 +243,10 @@ const Profile = () => {
                     <span className="text-sm text-card-foreground">Mostra il mio profilo nella Classifica</span>
                     <Switch checked={leaderboardOptIn} onCheckedChange={setLeaderboardOptIn} />
                   </div>
-                  {leaderboardOptIn && (
-                    <div>
-                      <label className="text-xs text-muted-foreground block mb-1">Nickname in classifica (opzionale)</label>
-                      <Input
-                        value={leaderboardNick}
-                        onChange={e => setLeaderboardNick(e.target.value)}
-                        placeholder="Lascia vuoto per usare il tuo nome"
-                        maxLength={30}
-                      />
-                    </div>
+                  {!leaderboardOptIn && (
+                    <p className="text-xs text-muted-foreground italic">
+                      ⚠️ Il tuo profilo non apparirà nella classifica pubblica.
+                    </p>
                   )}
                   <Button size="sm" variant="outline" onClick={saveLeaderboardPrefs} disabled={savingLeaderboard}>
                     {savingLeaderboard ? "Salvataggio..." : "Salva preferenze classifica"}

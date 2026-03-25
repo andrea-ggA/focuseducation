@@ -50,7 +50,6 @@ const Profile = () => {
   const [examSubjectEdit, setExamSubjectEdit] = useState("");
   const [examDateEdit, setExamDateEdit]       = useState("");
   const [savingExam, setSavingExam]           = useState(false);
-  const [leaderboardOptIn, setLeaderboardOptIn] = useState(false);
   const [leaderboardOptIn, setLeaderboardOptIn] = useState(true);
   const [savingLeaderboard, setSavingLeaderboard] = useState(false);
 

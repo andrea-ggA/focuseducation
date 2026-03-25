@@ -187,7 +187,7 @@ const Dashboard = () => {
       supabase.from("focus_sessions").select("duration_minutes").eq("user_id", user!.id).eq("completed", true).gte("started_at", `${today}T00:00:00`),
       supabase.from("focus_sessions").select("duration_minutes").eq("user_id", user!.id).eq("completed", true),
       supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user!.id).eq("completed", true),
-      supabase.from("profiles").select("energy_level" as any).eq("user_id", user!.id).single(),
+      supabase.from("profiles").select("energy_level" as any).eq("user_id", user!.id).maybeSingle(),
       supabase.from("quiz_attempts").select("id", { count: "exact", head: true }).eq("user_id", user!.id).gte("completed_at", `${today}T00:00:00`),
       supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user!.id).gte("created_at", `${today}T00:00:00`),
       supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user!.id).eq("completed", true).gte("updated_at", `${today}T00:00:00`),

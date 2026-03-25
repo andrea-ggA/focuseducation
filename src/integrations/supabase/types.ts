@@ -564,6 +564,7 @@ export type Database = {
           goals: string[] | null
           id: string
           last_active_date: string | null
+          leaderboard_visible: boolean
           onboarding_completed: boolean
           streak_count: number
           streak_shield_active: boolean
@@ -584,6 +585,7 @@ export type Database = {
           goals?: string[] | null
           id?: string
           last_active_date?: string | null
+          leaderboard_visible?: boolean
           onboarding_completed?: boolean
           streak_count?: number
           streak_shield_active?: boolean
@@ -604,6 +606,7 @@ export type Database = {
           goals?: string[] | null
           id?: string
           last_active_date?: string | null
+          leaderboard_visible?: boolean
           onboarding_completed?: boolean
           streak_count?: number
           streak_shield_active?: boolean

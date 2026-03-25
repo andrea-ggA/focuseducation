@@ -1346,6 +1346,10 @@ export type Database = {
         Args: { _achievement_type: string; _user_id: string }
         Returns: boolean
       }
+      check_and_increment_rate_limit: {
+        Args: { _max_per_min?: number; _user_id: string }
+        Returns: boolean
+      }
       count_due_cards: { Args: { _user_id: string }; Returns: number }
       get_due_cards: {
         Args: { _limit?: number; _user_id: string }

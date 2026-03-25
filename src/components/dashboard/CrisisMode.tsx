@@ -99,14 +99,14 @@ Sii CONCRETO e BREVE. Usa emoji. In italiano. Max 500 parole.`,
         const content = fnData?.content || "";
         setAdvice(content);
         const builtSteps: SprintStep[] = [
-          { id:1, title:"Revisione argomenti deboli",   description:`Ripassa: ${weakTopics||"argomenti principali"}`, duration:"25 min", type:"review",  completed:false },
-          { id:2, title:"Quiz rapido",                   description:"15 domande sui temi più probabili",               duration:"20 min", type:"quiz",    completed:false },
-          { id:3, title:"Pausa attiva",                  description:"Muoviti, bevi acqua, respira",                    duration:"5 min",  type:"break",   completed:false },
-          { id:4, title:"Flashcard intensive",           description:`Ripassa: ${deckList||"il tuo materiale"}`,        duration:"25 min", type:"review",  completed:false },
-          { id:5, title:"Quiz finale",                   description:"Test completo per misurare il livello",           duration:"20 min", type:"quiz",    completed:false },
-          { id:6, title:"Ripasso definizioni chiave",    description:"Memorizza le 10 definizioni più importanti",      duration:"15 min", type:"summary", completed:false },
-          { id:7, title:"Pausa lunga",                   description:"15 min di riposo, niente telefono",               duration:"15 min", type:"break",   completed:false },
-          { id:8, title:"Simulazione esame",             description:"Rispondi a domande a tempo senza aiuti",          duration:"30 min", type:"quiz",    completed:false },
+          { id:1, title:"Revisione argomenti deboli",   description:`Ripassa: ${weakTopics||"argomenti principali"}`, duration:"25 min", type:"review" as const,  completed:false },
+          { id:2, title:"Quiz rapido",                   description:"15 domande sui temi più probabili",               duration:"20 min", type:"quiz" as const,    completed:false },
+          { id:3, title:"Pausa attiva",                  description:"Muoviti, bevi acqua, respira",                    duration:"5 min",  type:"break" as const,   completed:false },
+          { id:4, title:"Flashcard intensive",           description:`Ripassa: ${deckList||"il tuo materiale"}`,        duration:"25 min", type:"review" as const,  completed:false },
+          { id:5, title:"Quiz finale",                   description:"Test completo per misurare il livello",           duration:"20 min", type:"quiz" as const,    completed:false },
+          { id:6, title:"Ripasso definizioni chiave",    description:"Memorizza le 10 definizioni più importanti",      duration:"15 min", type:"summary" as const, completed:false },
+          { id:7, title:"Pausa lunga",                   description:"15 min di riposo, niente telefono",               duration:"15 min", type:"break" as const,   completed:false },
+          { id:8, title:"Simulazione esame",             description:"Rispondi a domande a tempo senza aiuti",          duration:"30 min", type:"quiz" as const,    completed:false },
         ].slice(0, hoursAvailable<=12 ? 5 : 8);
         setSteps(builtSteps);
         const { data: session } = await supabase.from("crisis_sessions").insert({

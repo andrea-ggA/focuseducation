@@ -1,1 +1,0 @@
-CREATE POLICY "Anyone can view questions of shared quizzes" ON public.quiz_questions FOR SELECT TO anon, authenticated USING (EXISTS (SELECT 1 FROM public.quizzes WHERE quizzes.id = quiz_questions.quiz_id AND quizzes.share_token IS NOT NULL));

@@ -85,11 +85,10 @@ const Profile = () => {
     if (!user) return;
     setSavingLeaderboard(true);
     await supabase.from("profiles").update({
-      leaderboard_opt_in: leaderboardOptIn,
-      leaderboard_nickname: leaderboardNick || null,
+      leaderboard_visible: leaderboardOptIn,
     } as any).eq("user_id", user.id);
     setSavingLeaderboard(false);
-    toast({ title: "Preferenze classifica salvate!" });
+    toast({ title: leaderboardOptIn ? "Ora sei visibile in classifica!" : "Sei stato rimosso dalla classifica." });
   };
 
   const loadProfile = async () => {

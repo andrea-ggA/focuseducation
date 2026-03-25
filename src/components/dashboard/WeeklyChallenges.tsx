@@ -168,14 +168,15 @@ const WeeklyChallenges = () => {
     if (!progress?.completed || progress.reward_claimed) return;
 
     // FIX: claim atomico server-side — previene double-claim e verifica condizioni
-    const { data, error } = await supabase.rpc("claim_weekly_challenge", {
+    const { data, error } = await supabase.rpc("claim_weekly_challenge" as any, {
       _user_id:      user.id,
       _challenge_id: challenge.id,
     });
+    const result = data as any;
 
-    if (error || !data?.success) {
-      const msg = data?.error === "already_claimed" ? "Premio già riscosso"
-                : data?.error === "not_completed"   ? "Sfida non ancora completata"
+    if (error || !result?.success) {
+      const msg = result?.error === "already_claimed" ? "Premio già riscosso"
+                : result?.error === "not_completed"   ? "Sfida non ancora completata"
                 : "Errore nel riscuotere il premio";
       toast({ title: "Errore", description: msg, variant: "destructive" });
       return;
@@ -188,7 +189,7 @@ const WeeklyChallenges = () => {
 
     toast({
       title: "🎉 Premio riscosso!",
-      description: `Hai guadagnato ${data.xp_awarded} XP per "${challenge.title}"!`,
+      description: `Hai guadagnato ${result.xp_awarded} XP per "${challenge.title}"!`,
     });
   };
 

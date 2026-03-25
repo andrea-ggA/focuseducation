@@ -107,7 +107,7 @@ interface DocumentUploadProps {
   onTextContentSet?: (text: string) => void;
   onDecompose?: () => void;
   onMindMap?: (nodes: any[], edges: any[]) => void;
-  onInsufficientCredits?: (action?: "quiz"|"flashcards"|"mindmap"|"summary"|"generic", creditsNeeded?: number) => void;
+  onInsufficientCredits?: (action?: string, creditsNeeded?: number) => void;
   onSummaryGenerated?: (content: string, format: string, title: string) => void;
 }
 

@@ -1,11 +1,12 @@
 import { Home, Sparkles, BookOpen, User } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
+import { useDueCards } from "@/hooks/useDueCards";
 
 const NAV_ITEMS = [
-  { icon: Home, label: "Home", path: "/dashboard" },
-  { icon: Sparkles, label: "Studio", path: "/study" },
-  { icon: BookOpen, label: "Libreria", path: "/libreria" },
-  { icon: User, label: "Profilo", path: "/profile" },
+  { icon: Home, label: "Home", path: "/dashboard", showBadge: false },
+  { icon: Sparkles, label: "Studio", path: "/study", showBadge: false },
+  { icon: BookOpen, label: "Libreria", path: "/libreria", showBadge: true },
+  { icon: User, label: "Profilo", path: "/profile", showBadge: false },
 ];
 
 const MobileBottomNav = () => {

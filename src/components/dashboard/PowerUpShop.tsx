@@ -147,15 +147,16 @@ const PowerUpShop = () => {
 
     // FIX: acquisto atomico server-side via RPC con whitelist prezzi
     // Previene: (1) race condition multi-tab, (2) price manipulation da client
-    const { data, error } = await supabase.rpc("purchase_powerup", {
+    const { data, error } = await supabase.rpc("purchase_powerup" as any, {
       _user_id:      user.id,
       _powerup_type: powerup.type,
       _max_qty:      powerup.maxQuantity,
     });
+    const result = data as any;
 
-    if (error || !data?.success) {
-      const msg = data?.error === "insufficient_xp" ? "XP insufficienti"
-                : data?.error === "max_reached"     ? `Hai già il massimo di ${powerup.name}`
+    if (error || !result?.success) {
+      const msg = result?.error === "insufficient_xp" ? "XP insufficienti"
+                : result?.error === "max_reached"     ? `Hai già il massimo di ${powerup.name}`
                 : "Errore durante l'acquisto";
       toast({ title: "Errore", description: msg, variant: "destructive" });
       setPurchasing(null);
@@ -169,10 +170,10 @@ const PowerUpShop = () => {
     setJustPurchased(powerup.id);
     setTimeout(() => setJustPurchased(null), 1500);
 
-    const xpAfter = data.xp_after ?? (xp.total_xp - powerup.xpCost);
+    const xpAfter = result.xp_after ?? (xp.total_xp - powerup.xpCost);
     toast({
       title: `${powerup.name} acquistato! 🎉`,
-      description: `Hai speso ${data.xp_cost ?? powerup.xpCost} XP. Ti rimangono ${xpAfter} XP.`,
+      description: `Hai speso ${result.xp_cost ?? powerup.xpCost} XP. Ti rimangono ${xpAfter} XP.`,
     });
   };
 
@@ -183,12 +184,13 @@ const PowerUpShop = () => {
     }
     setConverting(true);
     // FIX: conversione atomica server-side via RPC
-    const { data, error } = await supabase.rpc("convert_xp_to_credits", {
+    const { data, error } = await supabase.rpc("convert_xp_to_credits" as any, {
       _user_id:      user.id,
       _xp_cost:      XP_TO_CREDITS_RATE,
       _credits_gain: CREDITS_PER_CONVERSION,
     });
-    if (error || !data?.success) {
+    const convResult = data as any;
+    if (error || !convResult?.success) {
       toast({ title: "Errore", description: "Conversione fallita. Riprova.", variant: "destructive" });
       setConverting(false);
       return;

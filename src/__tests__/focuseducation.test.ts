@@ -71,8 +71,8 @@ describe("Credit Costs", () => {
     expect(CREDIT_COSTS.youtube).toBeGreaterThan(CREDIT_COSTS.quiz);
   });
 
-  test("flashcards ha un costo definito", () => {
-    expect(CREDIT_COSTS.flashcards).toBeDefined();
+  test("summary ha un costo definito", () => {
+    expect(CREDIT_COSTS.summary).toBeDefined();
   });
 });
 

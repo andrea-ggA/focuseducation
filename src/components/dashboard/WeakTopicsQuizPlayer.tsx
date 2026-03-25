@@ -67,10 +67,10 @@ export default function WeakTopicsQuizPlayer({ questionIds, onBack }: WeakTopics
     }
 
     // Record progress
-    await supabase.from("user_question_progress").insert({
+    await supabase.from("user_question_progress").insert([{
       user_id: user.id, question_id: q.id,
-      quiz_id: null, is_correct: isCorrect, topic: q.topic,
-    }).then(() => {});
+      quiz_id: q.id, is_correct: isCorrect, selected_answer: selected!,
+    }]).then(() => {});
   }, [selected, questions, current, user]);
 
   const next = useCallback(() => {

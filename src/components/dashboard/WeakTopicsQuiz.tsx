@@ -40,7 +40,7 @@ export default function WeakTopicsQuiz({ onStartQuiz }: WeakTopicsQuizProps) {
       const since = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
       const { data } = await supabase
         .from("user_question_progress")
-        .select("question_id, topic, is_correct")
+        .select("question_id, is_correct")
         .eq("user_id", user.id)
         .gte("answered_at", since)
         .order("answered_at", { ascending: false })
@@ -48,10 +48,21 @@ export default function WeakTopicsQuiz({ onStartQuiz }: WeakTopicsQuizProps) {
 
       if (!data || data.length === 0) { setLoading(false); return; }
 
-      // Aggregate by topic
+      // Aggregate by topic — topic comes from quiz_questions via question_id
+      // Since topic is not on user_question_progress, we fetch questions separately
+      const questionIds = [...new Set(data.map((r: any) => r.question_id))];
+      const { data: questionsData } = await supabase
+        .from("quiz_questions")
+        .select("id, topic")
+        .in("id", questionIds);
+      const topicMap: Record<string, string> = {};
+      for (const q of (questionsData || []) as any[]) {
+        topicMap[q.id] = q.topic || "Generale";
+      }
+
       const topicStats: Record<string, { wrong: number; total: number; wrongIds: string[] }> = {};
-      for (const row of data) {
-        const t = row.topic || "Generale";
+      for (const row of data as any[]) {
+        const t = topicMap[row.question_id] || "Generale";
         if (!topicStats[t]) topicStats[t] = { wrong: 0, total: 0, wrongIds: [] };
         topicStats[t].total++;
         if (!row.is_correct) {
@@ -73,7 +84,7 @@ export default function WeakTopicsQuiz({ onStartQuiz }: WeakTopicsQuizProps) {
         .slice(0, 5);
 
       setWeakTopics(sorted);
-      setTotalWrong(data.filter(r => !r.is_correct).length);
+      setTotalWrong((data as any[]).filter((r: any) => !r.is_correct).length);
 
       // Collect question IDs from the weakest 3 topics
       const ids: string[] = [];

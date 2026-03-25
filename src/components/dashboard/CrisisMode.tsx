@@ -44,7 +44,7 @@ export default function CrisisMode({ open, onClose }: CrisisModeProps) {
       .maybeSingle()
       .then(({ data }) => {
         if (data && data.plan_content) {
-          const plan = data.plan_content as { advice: string; steps: SprintStep[] };
+          const plan = data.plan_content as unknown as { advice: string; steps: SprintStep[] };
           if (plan.steps?.length > 0) {
             setSteps(plan.steps);
             setAdvice(plan.advice || "");
@@ -99,24 +99,24 @@ Sii CONCRETO e BREVE. Usa emoji. In italiano. Max 500 parole.`,
         const content = fnData?.content || "";
         setAdvice(content);
         const builtSteps: SprintStep[] = [
-          { id:1, title:"Revisione argomenti deboli",   description:`Ripassa: ${weakTopics||"argomenti principali"}`, duration:"25 min", type:"review",  completed:false },
-          { id:2, title:"Quiz rapido",                   description:"15 domande sui temi più probabili",               duration:"20 min", type:"quiz",    completed:false },
-          { id:3, title:"Pausa attiva",                  description:"Muoviti, bevi acqua, respira",                    duration:"5 min",  type:"break",   completed:false },
-          { id:4, title:"Flashcard intensive",           description:`Ripassa: ${deckList||"il tuo materiale"}`,        duration:"25 min", type:"review",  completed:false },
-          { id:5, title:"Quiz finale",                   description:"Test completo per misurare il livello",           duration:"20 min", type:"quiz",    completed:false },
-          { id:6, title:"Ripasso definizioni chiave",    description:"Memorizza le 10 definizioni più importanti",      duration:"15 min", type:"summary", completed:false },
-          { id:7, title:"Pausa lunga",                   description:"15 min di riposo, niente telefono",               duration:"15 min", type:"break",   completed:false },
-          { id:8, title:"Simulazione esame",             description:"Rispondi a domande a tempo senza aiuti",          duration:"30 min", type:"quiz",    completed:false },
+          { id:1, title:"Revisione argomenti deboli",   description:`Ripassa: ${weakTopics||"argomenti principali"}`, duration:"25 min", type:"review" as const,  completed:false },
+          { id:2, title:"Quiz rapido",                   description:"15 domande sui temi più probabili",               duration:"20 min", type:"quiz" as const,    completed:false },
+          { id:3, title:"Pausa attiva",                  description:"Muoviti, bevi acqua, respira",                    duration:"5 min",  type:"break" as const,   completed:false },
+          { id:4, title:"Flashcard intensive",           description:`Ripassa: ${deckList||"il tuo materiale"}`,        duration:"25 min", type:"review" as const,  completed:false },
+          { id:5, title:"Quiz finale",                   description:"Test completo per misurare il livello",           duration:"20 min", type:"quiz" as const,    completed:false },
+          { id:6, title:"Ripasso definizioni chiave",    description:"Memorizza le 10 definizioni più importanti",      duration:"15 min", type:"summary" as const, completed:false },
+          { id:7, title:"Pausa lunga",                   description:"15 min di riposo, niente telefono",               duration:"15 min", type:"break" as const,   completed:false },
+          { id:8, title:"Simulazione esame",             description:"Rispondi a domande a tempo senza aiuti",          duration:"30 min", type:"quiz" as const,    completed:false },
         ].slice(0, hoursAvailable<=12 ? 5 : 8);
         setSteps(builtSteps);
-        const { data: session } = await supabase.from("crisis_sessions").insert({
-          user_id: user.id, exam_subject: subject, hours_available: hoursAvailable,
-          plan_content: { advice: content, steps: builtSteps }, total_steps: builtSteps.length,
+        const { data: session } = await supabase.from("crisis_sessions").insert([{
+          user_id: user.id, exam_subject: subject as string, hours_available: hoursAvailable,
+          plan_content: { advice: content, steps: builtSteps } as any, total_steps: builtSteps.length,
           expires_at: new Date(Date.now()+hoursAvailable*3_600_000).toISOString(),
-        }).select("id").single();
+        }]).select("id").single();
         if (session) setSessionId(session.id);
       } else {
-        toast({ title:"Errore", description: funcErr?.message || "Riprova tra un momento.", variant:"destructive" });
+        toast({ title:"Errore", description: fnError?.message || "Riprova tra un momento.", variant:"destructive" });
       }
     } catch(e) {
       toast({ title:"Errore", description:"Impossibile generare il piano.", variant:"destructive" });

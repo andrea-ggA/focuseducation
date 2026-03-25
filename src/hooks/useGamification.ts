@@ -79,17 +79,17 @@ export const useGamification = () => {
       // Previene race condition multi-tab che causava doppio incremento streak
       // e consumo multiplo dello streak_freeze power-up
       try {
-        const { data: streakResult, error: streakError } = await supabase.rpc("update_daily_streak", {
+        const { data: streakResult, error: streakError } = await supabase.rpc("update_daily_streak" as any, {
           _user_id: user.id,
         });
         if (streakError) {
           console.error("[useGamification] streak RPC error:", streakError);
-          // Fallback: leggi il valore attuale dal profilo
           if (profileRes.status === "fulfilled" && profileRes.value.data) {
             setStreakCount(profileRes.value.data.streak_count || 0);
           }
         } else {
-          setStreakCount(streakResult?.streak ?? 0);
+          const sr = streakResult as any;
+          setStreakCount(sr?.streak ?? 0);
         }
       } catch (streakErr) {
         console.error("[useGamification] streak update failed:", streakErr);

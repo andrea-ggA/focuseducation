@@ -25,7 +25,6 @@ import {
   Users, CreditCard, Timer, Loader2, Shield, Sparkles, Zap, MessageSquare, Plus,
   Search, TrendingUp, Activity, RefreshCw, Trash2, Mail, Calendar, AlertCircle,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
 
 import { useToast } from "@/hooks/use-toast";
 import AppHeader from "@/components/AppHeader";
@@ -117,7 +116,7 @@ const Admin = () => {
   const fetchAll = async () => {
     const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
     const [profilesRes, subsRes, rolesRes, quizzesRes, focusRes, creditsRes, ticketsRes,
-           flashcardsRes, docsRes, newUsersRes, genJobsRes] = await Promise.all([
+           flashcardsRes, docsRes, newUsersRes] = await Promise.all([
       supabase.from("profiles").select("user_id, full_name, study_level, streak_count, onboarding_completed, created_at").order("created_at", { ascending: false }),
       supabase.from("subscriptions").select("id, user_id, plan_name, status, current_period_start, current_period_end").order("created_at", { ascending: false }),
       supabase.from("user_roles").select("id, user_id, role"),
@@ -144,7 +143,7 @@ const Admin = () => {
     const activeSubs   = allSubs.filter(s => ["active","trialing","ACTIVE","TRIALING"].includes(s.status)).length;
     const totalCreds   = allCreds.reduce((s, c) => s + (c.balance || 0), 0);
 
-    setGenJobs((genJobsRes.data || []) as GenerationJob[]);
+    setGenJobs([] as GenerationJob[]);
     setStats({
       totalUsers: allUsers.length,
       activeSubscriptions: activeSubs,

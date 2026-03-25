@@ -14,8 +14,6 @@ interface Job {
   title:            string | null;
   total_items:      number | null;
   error:            string | null;
-  progress_message: string | null;  // FIX: dedicate progress field
-  progress_pct:     number | null;
   created_at:       string;
 }
 
@@ -66,7 +64,7 @@ const GenerationNotifier = () => {
     // Load active jobs once on mount
     supabase
       .from("generation_jobs")
-      .select("id, status, content_type, title, total_items, error, progress_message, progress_pct, created_at")
+      .select("id, status, content_type, title, total_items, error, created_at")
       .eq("user_id", user.id)
       .in("status", ["pending", "processing"])
       .order("created_at", { ascending: false })
@@ -152,11 +150,8 @@ const GenerationNotifier = () => {
     <div className="fixed bottom-4 right-4 z-50 space-y-2">
       <AnimatePresence>
         {activeJobs.map((job) => {
-          const progress    = parseProgress(job.progress_message, job.error);
-          // Use server-provided progress_pct if available, otherwise calculate from section data
-          const progressPct = job.progress_pct != null
-            ? job.progress_pct
-            : progress ? Math.round((progress.section / progress.total) * 100) : 0;
+          const progress    = parseProgress(null, job.error);
+          const progressPct = progress ? Math.round((progress.section / progress.total) * 100) : 0;
 
           return (
             <motion.div

@@ -55,8 +55,8 @@ export default function RecurringErrorAnalysis() {
 
       // Aggregate by topic
       const topicCounts: Record<string, number> = {};
-      for (const row of wrongAnswers) {
-        const t = row.topic || "Generale";
+      for (const row of wrongAnswers as any[]) {
+        const t = (row as any).topic || "Generale";
         topicCounts[t] = (topicCounts[t] || 0) + 1;
       }
       const topicSummary = Object.entries(topicCounts)
@@ -87,8 +87,7 @@ Totale errori analizzati: ${wrongAnswers.length}`,
       const res = { ok: !fnError && fnData };
 
       if (res.ok) {
-        const data = await res.json();
-        const content = data?.result?.markdown || data?.result?.content || "";
+        const content = fnData?.content || "";
         setAnalysis(content || "Analisi completata.");
       } else {
         setAnalysis("Impossibile generare l'analisi. Riprova più tardi.");

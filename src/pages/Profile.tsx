@@ -244,16 +244,10 @@ const Profile = () => {
                     <span className="text-sm text-card-foreground">Mostra il mio profilo nella Classifica</span>
                     <Switch checked={leaderboardOptIn} onCheckedChange={setLeaderboardOptIn} />
                   </div>
-                  {leaderboardOptIn && (
-                    <div>
-                      <label className="text-xs text-muted-foreground block mb-1">Nickname in classifica (opzionale)</label>
-                      <Input
-                        value={leaderboardNick}
-                        onChange={e => setLeaderboardNick(e.target.value)}
-                        placeholder="Lascia vuoto per usare il tuo nome"
-                        maxLength={30}
-                      />
-                    </div>
+                  {!leaderboardOptIn && (
+                    <p className="text-xs text-muted-foreground italic">
+                      ⚠️ Il tuo profilo non apparirà nella classifica pubblica.
+                    </p>
                   )}
                   <Button size="sm" variant="outline" onClick={saveLeaderboardPrefs} disabled={savingLeaderboard}>
                     {savingLeaderboard ? "Salvataggio..." : "Salva preferenze classifica"}

@@ -143,7 +143,7 @@ const Admin = () => {
     const activeSubs   = allSubs.filter(s => ["active","trialing","ACTIVE","TRIALING"].includes(s.status)).length;
     const totalCreds   = allCreds.reduce((s, c) => s + (c.balance || 0), 0);
 
-    setGenJobs((genJobsRes.data || []) as GenerationJob[]);
+    setGenJobs([] as GenerationJob[]);
     setStats({
       totalUsers: allUsers.length,
       activeSubscriptions: activeSubs,

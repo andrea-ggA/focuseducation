@@ -184,12 +184,13 @@ const PowerUpShop = () => {
     }
     setConverting(true);
     // FIX: conversione atomica server-side via RPC
-    const { data, error } = await supabase.rpc("convert_xp_to_credits", {
+    const { data, error } = await supabase.rpc("convert_xp_to_credits" as any, {
       _user_id:      user.id,
       _xp_cost:      XP_TO_CREDITS_RATE,
       _credits_gain: CREDITS_PER_CONVERSION,
     });
-    if (error || !data?.success) {
+    const convResult = data as any;
+    if (error || !convResult?.success) {
       toast({ title: "Errore", description: "Conversione fallita. Riprova.", variant: "destructive" });
       setConverting(false);
       return;

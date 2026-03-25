@@ -156,10 +156,11 @@ export default function FortuneWheel({ open, onClose }: FortuneWheelProps) {
     try {
       // FIX: selezione premio server-side via RPC atomica
       // Il server seleziona il premio, lo registra e lo eroga in un'unica transazione
-      const { data, error } = await supabase.rpc("fortune_wheel_spin", { _user_id: user.id });
+      const { data, error } = await supabase.rpc("fortune_wheel_spin" as any, { _user_id: user.id });
+      const result = data as any;
 
-      if (error || !data?.success) {
-        const msg = data?.error === "already_spun"
+      if (error || !result?.success) {
+        const msg = result?.error === "already_spun"
           ? "Hai già girato la ruota oggi!"
           : "Errore durante il giro. Riprova.";
         toast({ title: "Errore", description: msg, variant: "destructive" });
@@ -168,7 +169,7 @@ export default function FortuneWheel({ open, onClose }: FortuneWheelProps) {
       }
 
       // Il server ci dice l'indice della fetta vincitrice — usiamo solo quello per l'animazione
-      const prizeIdx     = data.prize_idx as number;
+      const prizeIdx     = result.prize_idx as number;
       const selectedPrize = PRIZES[prizeIdx];
 
       // Calcola rotazione per l'animazione (la ruota si ferma sul premio corretto)

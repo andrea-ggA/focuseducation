@@ -87,8 +87,7 @@ Totale errori analizzati: ${wrongAnswers.length}`,
       const res = { ok: !fnError && fnData };
 
       if (res.ok) {
-        const data = await res.json();
-        const content = data?.result?.markdown || data?.result?.content || "";
+        const content = fnData?.content || "";
         setAnalysis(content || "Analisi completata.");
       } else {
         setAnalysis("Impossibile generare l'analisi. Riprova più tardi.");

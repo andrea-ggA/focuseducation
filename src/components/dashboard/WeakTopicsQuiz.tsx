@@ -84,7 +84,7 @@ export default function WeakTopicsQuiz({ onStartQuiz }: WeakTopicsQuizProps) {
         .slice(0, 5);
 
       setWeakTopics(sorted);
-      setTotalWrong(data.filter(r => !r.is_correct).length);
+      setTotalWrong((data as any[]).filter((r: any) => !r.is_correct).length);
 
       // Collect question IDs from the weakest 3 topics
       const ids: string[] = [];

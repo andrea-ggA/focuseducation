@@ -104,7 +104,7 @@ export default function FocusBurst({ onClose, onComplete }: FocusBurstProps) {
             .limit(MAX_QUESTIONS * 4);
           const pool = (qData || []).sort(() => Math.random() - 0.5).slice(0, MAX_QUESTIONS);
           for (const q of pool) {
-            burst.push({ type:"question", id:q.id, question:q.question, options:q.options,
+            burst.push({ type:"question", id:q.id, question:q.question, options:q.options as any as string[],
               correct_answer:q.correct_answer, explanation:q.explanation, topic:q.topic });
           }
         }

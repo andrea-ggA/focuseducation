@@ -116,7 +116,7 @@ Sii CONCRETO e BREVE. Usa emoji. In italiano. Max 500 parole.`,
         }]).select("id").single();
         if (session) setSessionId(session.id);
       } else {
-        toast({ title:"Errore", description: funcErr?.message || "Riprova tra un momento.", variant:"destructive" });
+        toast({ title:"Errore", description: fnError?.message || "Riprova tra un momento.", variant:"destructive" });
       }
     } catch(e) {
       toast({ title:"Errore", description:"Impossibile generare il piano.", variant:"destructive" });

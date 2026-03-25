@@ -150,11 +150,8 @@ const GenerationNotifier = () => {
     <div className="fixed bottom-4 right-4 z-50 space-y-2">
       <AnimatePresence>
         {activeJobs.map((job) => {
-          const progress    = parseProgress(job.progress_message, job.error);
-          // Use server-provided progress_pct if available, otherwise calculate from section data
-          const progressPct = job.progress_pct != null
-            ? job.progress_pct
-            : progress ? Math.round((progress.section / progress.total) * 100) : 0;
+          const progress    = parseProgress(null, job.error);
+          const progressPct = progress ? Math.round((progress.section / progress.total) * 100) : 0;
 
           return (
             <motion.div

@@ -51,10 +51,10 @@ const App = () => (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
-      <TrialExpiredModal />
         <Sonner />
         <BrowserRouter>
           <AuthProvider>
+            <TrialExpiredModal />
             <ErrorBoundary>
               <Suspense fallback={<PageLoader />}>
                 <Routes>

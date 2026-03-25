@@ -62,6 +62,42 @@ export type Database = {
         }
         Relationships: []
       }
+      crisis_sessions: {
+        Row: {
+          activated_at: string
+          completed_steps: number
+          exam_subject: string | null
+          expires_at: string
+          hours_available: number
+          id: string
+          plan_content: Json
+          total_steps: number
+          user_id: string
+        }
+        Insert: {
+          activated_at?: string
+          completed_steps?: number
+          exam_subject?: string | null
+          expires_at?: string
+          hours_available?: number
+          id?: string
+          plan_content?: Json
+          total_steps?: number
+          user_id: string
+        }
+        Update: {
+          activated_at?: string
+          completed_steps?: number
+          exam_subject?: string | null
+          expires_at?: string
+          hours_available?: number
+          id?: string
+          plan_content?: Json
+          total_steps?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
       daily_objectives: {
         Row: {
           created_at: string
@@ -125,6 +161,27 @@ export type Database = {
         }
         Relationships: []
       }
+      email_log: {
+        Row: {
+          email_type: string
+          id: string
+          sent_at: string
+          user_id: string
+        }
+        Insert: {
+          email_type: string
+          id?: string
+          sent_at?: string
+          user_id: string
+        }
+        Update: {
+          email_type?: string
+          id?: string
+          sent_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       flashcard_decks: {
         Row: {
           card_count: number
@@ -162,6 +219,41 @@ export type Database = {
             columns: ["document_id"]
             isOneToOne: false
             referencedRelation: "documents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      flashcard_reviews: {
+        Row: {
+          card_id: string
+          deck_id: string
+          id: string
+          quality: number
+          reviewed_at: string
+          user_id: string
+        }
+        Insert: {
+          card_id: string
+          deck_id: string
+          id?: string
+          quality: number
+          reviewed_at?: string
+          user_id: string
+        }
+        Update: {
+          card_id?: string
+          deck_id?: string
+          id?: string
+          quality?: number
+          reviewed_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "flashcard_reviews_card_id_fkey"
+            columns: ["card_id"]
+            isOneToOne: false
+            referencedRelation: "flashcards"
             referencedColumns: ["id"]
           },
         ]
@@ -215,6 +307,36 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      focus_burst_sessions: {
+        Row: {
+          cards_reviewed: number
+          completed: boolean
+          duration_seconds: number
+          id: string
+          questions_answered: number
+          started_at: string
+          user_id: string
+        }
+        Insert: {
+          cards_reviewed?: number
+          completed?: boolean
+          duration_seconds?: number
+          id?: string
+          questions_answered?: number
+          started_at?: string
+          user_id: string
+        }
+        Update: {
+          cards_reviewed?: number
+          completed?: boolean
+          duration_seconds?: number
+          id?: string
+          questions_answered?: number
+          started_at?: string
+          user_id?: string
+        }
+        Relationships: []
       }
       focus_sessions: {
         Row: {
@@ -436,6 +558,8 @@ export type Database = {
           avatar_url: string | null
           created_at: string
           energy_level: string
+          exam_date: string | null
+          exam_subject: string | null
           full_name: string | null
           goals: string[] | null
           id: string
@@ -444,14 +568,18 @@ export type Database = {
           streak_count: number
           streak_shield_active: boolean
           study_level: string | null
+          study_subject: string | null
           updated_at: string
           user_id: string
+          weekly_goal_minutes: number
         }
         Insert: {
           adhd_traits?: string[] | null
           avatar_url?: string | null
           created_at?: string
           energy_level?: string
+          exam_date?: string | null
+          exam_subject?: string | null
           full_name?: string | null
           goals?: string[] | null
           id?: string
@@ -460,14 +588,18 @@ export type Database = {
           streak_count?: number
           streak_shield_active?: boolean
           study_level?: string | null
+          study_subject?: string | null
           updated_at?: string
           user_id: string
+          weekly_goal_minutes?: number
         }
         Update: {
           adhd_traits?: string[] | null
           avatar_url?: string | null
           created_at?: string
           energy_level?: string
+          exam_date?: string | null
+          exam_subject?: string | null
           full_name?: string | null
           goals?: string[] | null
           id?: string
@@ -476,8 +608,10 @@ export type Database = {
           streak_count?: number
           streak_shield_active?: boolean
           study_level?: string | null
+          study_subject?: string | null
           updated_at?: string
           user_id?: string
+          weekly_goal_minutes?: number
         }
         Relationships: []
       }
@@ -527,6 +661,38 @@ export type Database = {
             columns: ["quiz_id"]
             isOneToOne: false
             referencedRelation: "quizzes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      quiz_question_feedback: {
+        Row: {
+          created_at: string
+          id: string
+          question_id: string
+          rating: number
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          question_id: string
+          rating: number
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          question_id?: string
+          rating?: number
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "quiz_question_feedback_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "quiz_questions"
             referencedColumns: ["id"]
           },
         ]
@@ -632,7 +798,9 @@ export type Database = {
         Row: {
           code: string
           created_at: string
+          credits_earned: number
           discount_percent: number
+          friends_joined: number
           id: string
           max_uses: number
           times_used: number
@@ -641,7 +809,9 @@ export type Database = {
         Insert: {
           code: string
           created_at?: string
+          credits_earned?: number
           discount_percent?: number
+          friends_joined?: number
           id?: string
           max_uses?: number
           times_used?: number
@@ -650,7 +820,9 @@ export type Database = {
         Update: {
           code?: string
           created_at?: string
+          credits_earned?: number
           discount_percent?: number
+          friends_joined?: number
           id?: string
           max_uses?: number
           times_used?: number
@@ -732,9 +904,11 @@ export type Database = {
           current_period_end: string | null
           current_period_start: string | null
           id: string
+          is_trial: boolean
           paypal_subscription_id: string | null
           plan_name: string
           status: string
+          trial_end_at: string | null
           updated_at: string
           user_id: string
         }
@@ -743,9 +917,11 @@ export type Database = {
           current_period_end?: string | null
           current_period_start?: string | null
           id?: string
+          is_trial?: boolean
           paypal_subscription_id?: string | null
           plan_name: string
           status?: string
+          trial_end_at?: string | null
           updated_at?: string
           user_id: string
         }
@@ -754,9 +930,11 @@ export type Database = {
           current_period_end?: string | null
           current_period_start?: string | null
           id?: string
+          is_trial?: boolean
           paypal_subscription_id?: string | null
           plan_name?: string
           status?: string
+          trial_end_at?: string | null
           updated_at?: string
           user_id?: string
         }
@@ -1160,6 +1338,29 @@ export type Database = {
       }
     }
     Functions: {
+      activate_trial: {
+        Args: { _days?: number; _plan_name?: string; _user_id: string }
+        Returns: boolean
+      }
+      award_achievement: {
+        Args: { _achievement_type: string; _user_id: string }
+        Returns: boolean
+      }
+      count_due_cards: { Args: { _user_id: string }; Returns: number }
+      get_due_cards: {
+        Args: { _limit?: number; _user_id: string }
+        Returns: {
+          back: string
+          deck_id: string
+          deck_title: string
+          easiness_factor: number
+          front: string
+          id: string
+          mastery_level: number
+          next_review_at: string
+          topic: string
+        }[]
+      }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
@@ -1167,6 +1368,7 @@ export type Database = {
         }
         Returns: boolean
       }
+      maybe_refill_credits: { Args: { _user_id: string }; Returns: Json }
       spend_credits: {
         Args: {
           _action: string

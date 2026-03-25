@@ -40,7 +40,7 @@ export default function WeakTopicsQuiz({ onStartQuiz }: WeakTopicsQuizProps) {
       const since = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
       const { data } = await supabase
         .from("user_question_progress")
-        .select("question_id, topic, is_correct")
+        .select("question_id, is_correct")
         .eq("user_id", user.id)
         .gte("answered_at", since)
         .order("answered_at", { ascending: false })

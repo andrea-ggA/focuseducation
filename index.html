@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Security headers -->
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta http-equiv="X-Frame-Options" content="DENY" />
+    <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
+    <meta http-equiv="Permissions-Policy" content="camera=(), microphone=(self), geolocation=()" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>FocusED — Piattaforma AI di Studio per ADHD | Quiz, Flashcard, Riassunti</title>
+    <meta name="description" content="FocusED è la piattaforma AI di studio progettata per studenti con ADHD. Carica i tuoi appunti e genera quiz, flashcard, mappe concettuali e riassunti in 30 secondi. Pomodoro, gamification e tutor AI integrati.">
+    <meta name="author" content="FocusED">
+    <meta name="keywords" content="studio AI, piattaforma studio ADHD, flashcard AI, quiz AI, riassunti automatici, mappe concettuali, studenti università, pomodoro ADHD, tutor AI italiano">
+    <link rel="canonical" href="https://focuseducation.lovable.app" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://focuseducation.lovable.app" />
+    <meta property="og:site_name" content="FocusED" />
+    <meta property="og:locale" content="it_IT" />
+    <meta property="og:title" content="FocusED — Piattaforma AI di Studio per ADHD" />
+    <meta property="og:description" content="Carica i tuoi appunti e genera quiz, flashcard, mappe concettuali e riassunti con l'AI in 30 secondi. Progettata per menti ADHD.">
+    <meta property="og:image" content="https://focuseducation.lovable.app/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="FocusED — Piattaforma AI di Studio per ADHD" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="FocusED — Piattaforma AI di Studio per ADHD" />
+    <meta name="twitter:description" content="Carica i tuoi appunti e genera quiz, flashcard, mappe concettuali e riassunti con l'AI in 30 secondi. Progettata per menti ADHD.">
+    <meta name="twitter:image" content="https://focuseducation.lovable.app/og-image.png" />
+
+    <!-- JSON-LD Organization Schema -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "FocusED",
+      "url": "https://focuseducation.lovable.app",
+      "logo": "https://focuseducation.lovable.app/pwa-512x512.png",
+      "description": "Piattaforma AI di studio progettata per studenti con ADHD. Quiz, flashcard, riassunti e mappe concettuali generate dall'intelligenza artificiale.",
+      "sameAs": []
+    }
+    </script>
+
+    <!-- JSON-LD WebApplication Schema -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "FocusED",
+      "url": "https://focuseducation.lovable.app",
+      "applicationCategory": "EducationalApplication",
+      "operatingSystem": "Web",
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "EUR",
+        "description": "Piano gratuito con 15 NeuroCredits al mese"
+      },
+      "aggregateRating": {
+        "@type": "AggregateRating",
+        "ratingValue": "4.8",
+        "ratingCount": "5000"
+      }
+    }
+    </script>
+
+    <!-- Security headers via meta tags -->
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'self';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval'
+        https://js.paypal.com https://www.paypalobjects.com
+        https://cdn.jsdelivr.net https://cdnjs.cloudflare.com;
+      style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+      font-src 'self' https://fonts.gstatic.com data:;
+      img-src 'self' data: blob:
+        https://*.supabase.co https://*.supabase.in
+        https://www.paypalobjects.com https:;
+      connect-src 'self'
+        https://*.supabase.co https://*.supabase.in
+        wss://*.supabase.co
+        https://generativelanguage.googleapis.com
+        https://focuseducation-backend-87505598703.europe-west1.run.app
+        https://api.resend.com
+        https://api-m.paypal.com https://api-m.sandbox.paypal.com
+        https://www.youtube.com https://www.youtube.com/youtubei
+        https://www.googleapis.com;
+      media-src 'self' blob: data:;
+      worker-src 'self' blob:;
+      frame-src https://www.paypal.com https://www.sandbox.paypal.com https://js.paypal.com;
+      object-src 'none';
+      frame-ancestors 'none';
+      base-uri 'self';
+      form-action 'self';
+    " />
+
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta http-equiv="X-Frame-Options" content="SAMEORIGIN" />
+    <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
+    <meta http-equiv="Permissions-Policy" content="camera=(), microphone=(self), geolocation=()" />
+
+    <!-- PWA -->
+    <meta name="theme-color" content="#2a9d8f" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="FocusED" />
+    <link rel="apple-touch-icon" href="/pwa-192x192.png" />
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

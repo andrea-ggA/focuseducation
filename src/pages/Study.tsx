@@ -89,7 +89,7 @@ const Study = () => {
                 onDecompose={() => setMicroTaskRefresh((p) => p + 1)}
                 onMindMap={(nodes, edges)   => dispatch({ type: "UPLOAD_MINDMAP", nodes, edges })}
                 onInsufficientCredits={(action, needed) => {
-                  setPaywallAction(action ?? "generic");
+                  setPaywallAction((action ?? "generic") as PaywallAction);
                   setPaywallNeeded(needed);
                   setShowPaywall(true);
                 }}

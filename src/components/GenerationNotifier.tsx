@@ -66,7 +66,7 @@ const GenerationNotifier = () => {
     // Load active jobs once on mount
     supabase
       .from("generation_jobs")
-      .select("id, status, content_type, title, total_items, error, progress_message, progress_pct, created_at")
+      .select("id, status, content_type, title, total_items, error, created_at")
       .eq("user_id", user.id)
       .in("status", ["pending", "processing"])
       .order("created_at", { ascending: false })

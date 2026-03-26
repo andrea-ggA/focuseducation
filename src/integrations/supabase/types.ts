@@ -1354,6 +1354,7 @@ export type Database = {
         Returns: boolean
       }
       count_due_cards: { Args: { _user_id: string }; Returns: number }
+      fortune_wheel_spin: { Args: { _user_id: string }; Returns: Json }
       get_due_cards: {
         Args: { _limit?: number; _user_id: string }
         Returns: {
@@ -1385,6 +1386,7 @@ export type Database = {
         }
         Returns: Json
       }
+      update_daily_streak: { Args: { _user_id: string }; Returns: Json }
     }
     Enums: {
       app_role: "admin" | "moderator" | "user"

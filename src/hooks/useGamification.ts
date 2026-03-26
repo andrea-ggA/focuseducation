@@ -81,7 +81,7 @@ export const useGamification = () => {
       try {
         const { data: streakResult, error: streakError } = await supabase.rpc("update_daily_streak" as any, {
           _user_id: user.id,
-        });
+        }).throwOnError().then(r => r, err => ({ data: null, error: err }));
         if (streakError) {
           console.error("[useGamification] streak RPC error:", streakError);
           if (profileRes.status === "fulfilled" && profileRes.value.data) {

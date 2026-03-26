@@ -9,10 +9,13 @@
 import { supabase } from "@/integrations/supabase/client";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL as string | undefined;
-const hasBackend  = Boolean(BACKEND_URL);
 
-// Timeout per le chiamate al backend esterno (30s)
-const BACKEND_TIMEOUT_MS = 30_000;
+// Backend esterno disabilitato: il backend Cloud Run è morto (401/403).
+// Tutte le chiamate vanno direttamente alle Edge Functions.
+const hasBackend  = false;
+
+// Timeout per le chiamate al backend esterno (ridotto: backend inaffidabile)
+const BACKEND_TIMEOUT_MS = 10_000;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export async function getAuthToken(): Promise<string> {

@@ -8,14 +8,19 @@
 
 import { supabase } from "@/integrations/supabase/client";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL as string | undefined;
+const LEGACY_BACKEND_URL = "https://focuseducation-backend-87505598703.europe-west1.run.app";
+const FIXED_BACKEND_URL = "https://focuseducation-backend-fixed-87505598703.europe-west1.run.app";
 
-// Backend esterno disabilitato: il backend Cloud Run è morto (401/403).
-// Tutte le chiamate vanno direttamente alle Edge Functions.
-const hasBackend  = false;
+function normalizeBackendUrl(url?: string): string | undefined {
+  if (!url) return FIXED_BACKEND_URL;
+  return url.includes(LEGACY_BACKEND_URL) ? FIXED_BACKEND_URL : url;
+}
 
-// Timeout per le chiamate al backend esterno (ridotto: backend inaffidabile)
-const BACKEND_TIMEOUT_MS = 10_000;
+const BACKEND_URL = normalizeBackendUrl(import.meta.env.VITE_BACKEND_URL as string | undefined);
+const hasBackend = Boolean(BACKEND_URL);
+
+// Timeout per le chiamate al backend esterno
+const BACKEND_TIMEOUT_MS = 30_000;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export async function getAuthToken(): Promise<string> {

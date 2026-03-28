@@ -1,26 +1,31 @@
 /**
- * backendApi.ts — routing intelligente con fallback:
+ * backendApi.ts — routing intelligente con fallback e supporto async:
  *
- * Prova il backend esterno (Cloud Run) se configurato.
- * Se fallisce (timeout, errore, HTML response) → fallback su Edge Functions.
- * I save helpers chiamano sempre Supabase direttamente.
+ * Contenuto piccolo (<40k chars): Cloud Run sync (veloce, ~20-30s)
+ * Contenuto grande (>=40k chars): Edge Function async (background, nessun timeout)
+ *
+ * Se Cloud Run restituisce dati grezzi → frontend salva su Supabase
+ * Se Edge Function ha già salvato → usa direttamente quiz_id/deck_id
+ * Se Edge Function async → ascolta Realtime sul jobId
  */
 
 import { supabase } from "@/integrations/supabase/client";
 
+const FIXED_BACKEND_URL  = "https://focuseducation-backend-fixed-87505598703.europe-west1.run.app";
 const LEGACY_BACKEND_URL = "https://focuseducation-backend-87505598703.europe-west1.run.app";
-const FIXED_BACKEND_URL = "https://focuseducation-backend-fixed-87505598703.europe-west1.run.app";
 
-function normalizeBackendUrl(url?: string): string | undefined {
+function normalizeBackendUrl(url?: string): string {
   if (!url) return FIXED_BACKEND_URL;
   return url.includes(LEGACY_BACKEND_URL) ? FIXED_BACKEND_URL : url;
 }
 
 const BACKEND_URL = normalizeBackendUrl(import.meta.env.VITE_BACKEND_URL as string | undefined);
-const hasBackend = Boolean(BACKEND_URL);
 
-// Timeout per le chiamate al backend esterno
-const BACKEND_TIMEOUT_MS = 30_000;
+// Soglia: sopra questa dimensione usiamo Edge Function async
+export const ASYNC_THRESHOLD = 40_000;
+
+// Timeout per Cloud Run (documenti piccoli)
+const SYNC_TIMEOUT_MS = 90_000;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export async function getAuthToken(): Promise<string> {
@@ -30,61 +35,51 @@ export async function getAuthToken(): Promise<string> {
   return token;
 }
 
-// ── Supabase Edge Function base URL ───────────────────────────────────────────
 function supabaseUrl() { return (import.meta.env.VITE_SUPABASE_URL as string) ?? ""; }
 function anonKey()     { return (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string) ?? ""; }
 
-// ── Fetch with timeout ───────────────────────────────────────────────────────
-async function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs = BACKEND_TIMEOUT_MS): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...opts, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
+async function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number): Promise<Response> {
+  const ctrl  = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try { return await fetch(url, { ...opts, signal: ctrl.signal }); }
+  finally { clearTimeout(timer); }
 }
 
-// ── Safe JSON parse (handles HTML error pages) ──────────────────────────────
 async function safeJsonParse(res: Response): Promise<any> {
   const text = await res.text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`Errore del server (${res.status})`);
-  }
+  try { return JSON.parse(text); }
+  catch { throw new Error(`Errore del server (${res.status})`); }
 }
 
+// ── Tipo risultato generazione ────────────────────────────────────────────────
+export type GenerationResult =
+  | { mode: "sync_backend"; data: any }
+  | { mode: "sync_edge";    quizId?: string; deckId?: string }
+  | { mode: "async_edge";   jobId: string };
+
 // ══════════════════════════════════════════════════════════════════════════════
-// AI TUTOR — streaming SSE (con fallback a Edge Function)
+// AI TUTOR — streaming SSE
 // ══════════════════════════════════════════════════════════════════════════════
 export async function streamTutorChat(
-  messages:         Array<{ role: string; content: string }>,
-  token:            string,
+  messages: Array<{ role: string; content: string }>,
+  token: string,
   documentContext?: string | null,
 ): Promise<Response> {
   const body: any = { messages };
   if (documentContext) body.documentContext = documentContext;
 
-  // Prova backend esterno
-  if (hasBackend) {
-    try {
-      const res = await fetchWithTimeout(`${BACKEND_URL}/ai-tutor`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(body),
-      });
-      // Se OK o errore noto (429/402) → ritorna
-      if (res.ok || res.status === 429 || res.status === 402) return res;
-      // Se errore generico → prova fallback
-      console.warn("[backendApi] Backend ai-tutor failed, falling back to Edge Function");
-    } catch (e) {
-      console.warn("[backendApi] Backend ai-tutor unreachable, falling back to Edge Function:", e);
-    }
+  try {
+    const res = await fetchWithTimeout(`${BACKEND_URL}/ai-tutor`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    }, 60_000);
+    if (res.ok || res.status === 429 || res.status === 402) return res;
+  } catch (e) {
+    console.warn("[backendApi] ai-tutor fallback:", e);
   }
 
-  // Fallback: Edge Function (fetch diretto per streaming)
-  const res = await fetch(`${supabaseUrl()}/functions/v1/ai-tutor`, {
+  return fetch(`${supabaseUrl()}/functions/v1/ai-tutor`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -93,38 +88,23 @@ export async function streamTutorChat(
     },
     body: JSON.stringify(body),
   });
-
-  if (!res.ok && res.status !== 429 && res.status !== 402) {
-    const err = await safeJsonParse(res).catch(() => null);
-    throw new Error(err?.error || `Errore del server (${res.status})`);
-  }
-  return res;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // TRASCRIZIONE AUDIO
 // ══════════════════════════════════════════════════════════════════════════════
 export async function transcribeAudio(audioFile: File, token: string): Promise<string> {
-  if (hasBackend) {
-    try {
-      const formData = new FormData();
-      formData.append("file", audioFile);
-      const res = await fetchWithTimeout(`${BACKEND_URL}/voice-to-notes`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: formData,
-      }, 60_000);
-      if (res.ok) {
-        const data = await safeJsonParse(res);
-        return data.notes || "";
-      }
-      console.warn("[backendApi] Backend voice-to-notes failed, falling back to Edge Function");
-    } catch (e) {
-      console.warn("[backendApi] Backend voice-to-notes unreachable:", e);
-    }
-  }
+  try {
+    const formData = new FormData();
+    formData.append("file", audioFile);
+    const res = await fetchWithTimeout(`${BACKEND_URL}/voice-to-notes`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    }, 60_000);
+    if (res.ok) { const d = await safeJsonParse(res); return d.notes || ""; }
+  } catch (e) { console.warn("[backendApi] voice-to-notes fallback:", e); }
 
-  // Fallback Edge Function
   const base64 = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload  = () => resolve((reader.result as string).split(",")[1]);
@@ -142,91 +122,121 @@ export async function transcribeAudio(audioFile: File, token: string): Promise<s
 // YOUTUBE TRANSCRIPT
 // ══════════════════════════════════════════════════════════════════════════════
 export async function fetchYoutubeTranscript(
-  url:   string,
-  token: string,
+  url: string, token: string,
 ): Promise<{ transcript: string; title: string; method: string; notice?: string }> {
-  if (hasBackend) {
-    try {
-      const res = await fetchWithTimeout(`${BACKEND_URL}/youtube-transcript`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ url }),
-      }, 60_000);
-      if (res.ok) return await safeJsonParse(res);
-      console.warn("[backendApi] Backend youtube-transcript failed, falling back to Edge Function");
-    } catch (e) {
-      console.warn("[backendApi] Backend youtube-transcript unreachable:", e);
-    }
-  }
+  try {
+    const res = await fetchWithTimeout(`${BACKEND_URL}/youtube-transcript`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ url }),
+    }, 90_000);
+    if (res.ok) return await safeJsonParse(res);
+  } catch (e) { console.warn("[backendApi] youtube-transcript fallback:", e); }
 
   const { data, error } = await supabase.functions.invoke("youtube-transcript", { body: { url } });
   if (error) throw new Error(error.message || "Impossibile trascrivere il video");
-  if (!data?.transcript) throw new Error("Nessuna trascrizione disponibile per questo video");
+  if (!data?.transcript) throw new Error("Nessuna trascrizione disponibile");
   return data as { transcript: string; title: string; method: string; notice?: string };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GENERAZIONE DA TESTO (con fallback)
+// GENERAZIONE DA TESTO — routing intelligente
 // ══════════════════════════════════════════════════════════════════════════════
-export async function generateFromText(
-  type:      string,
-  inputData: string,
-  token:     string,
-): Promise<any> {
-  if (hasBackend) {
+export async function generateContent(
+  type:        string,
+  inputData:   string,
+  token:       string,
+  jobId:       string,
+  documentId?: string,
+  title?:      string,
+): Promise<GenerationResult> {
+  const isLarge = inputData.length >= ASYNC_THRESHOLD;
+
+  // ── Cloud Run sync — solo per contenuti piccoli ───────────────────────────
+  if (!isLarge) {
     try {
       const res = await fetchWithTimeout(`${BACKEND_URL}/generate-content`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ type, inputData }),
-      }, 120_000); // 2 min timeout per generazione
-      if (res.ok) return await safeJsonParse(res);
-      console.warn(`[backendApi] Backend generate-content failed (${res.status}), falling back to Edge Function`);
-    } catch (e) {
-      console.warn("[backendApi] Backend generate-content unreachable:", e);
+      }, SYNC_TIMEOUT_MS);
+
+      if (res.ok) return { mode: "sync_backend", data: await safeJsonParse(res) };
+      console.warn(`[backendApi] Cloud Run failed (${res.status}), switching to Edge Function async`);
+    } catch (e: any) {
+      console.warn("[backendApi] Cloud Run unreachable:", e.message);
     }
+  } else {
+    console.log(`[backendApi] Large content (${inputData.length} chars), using Edge Function async directly`);
   }
 
-  // Fallback Edge Functions
+  // ── Edge Function async ───────────────────────────────────────────────────
   const typeMap: Record<string, string> = {
     quiz: "quiz", flashcards: "flashcards", quiz_gamified: "quiz_gamified",
-    decompose: "decompose", mindmap: "mindmap",
     summary: "summary", outline: "outline", smart_notes: "smart_notes",
+    decompose: "decompose", mindmap: "mindmap",
     flashcard: "flashcards", mappa_concettuale: "mindmap",
     riassunto: "summary", schema: "outline", appunti: "smart_notes",
     quiz_adhd: "quiz_gamified", micro_task: "decompose",
   };
   const edgeType = typeMap[type] || type;
 
+  // Casi speciali non-async
   if (edgeType === "decompose") {
     const { data, error } = await supabase.functions.invoke("decompose-tasks", { body: { content: inputData } });
     if (error) throw new Error(error.message || "Scomposizione fallita");
-    return data;
+    return { mode: "sync_backend", data };
   }
   if (edgeType === "mindmap") {
     const { data, error } = await supabase.functions.invoke("generate-mindmap", { body: { content: inputData, text: inputData } });
     if (error || !data?.success) throw new Error(error?.message || "Generazione mappa fallita");
-    return data;
+    return { mode: "sync_backend", data };
   }
   if (["summary", "outline", "smart_notes"].includes(edgeType)) {
     const { data, error } = await supabase.functions.invoke("generate-summary", { body: { content: inputData, format: edgeType } });
     if (error) throw new Error(error.message || "Generazione sommario fallita");
-    return { result: { markdown: data?.content }, content: data?.content };
+    return { mode: "sync_backend", data: { result: { markdown: data?.content }, content: data?.content } };
   }
-  const { data, error } = await supabase.functions.invoke("generate-study-content", { body: { content: inputData, type: edgeType } });
-  if (error) throw new Error(error.message || "Generazione fallita");
-  return data;
+
+  // Quiz / flashcards → Edge Function async
+  const { data, error } = await supabase.functions.invoke("generate-study-content", {
+    body: {
+      content:    inputData,
+      type:       edgeType,
+      jobId,
+      documentId: documentId || null,
+      title:      title || null,
+      asyncMode:  true,
+    },
+  });
+
+  if (error) throw new Error(error.message || "Avvio generazione fallito");
+
+  // 202 async
+  if (data?.accepted && data?.jobId) return { mode: "async_edge", jobId: data.jobId };
+  // Sync completato (file corto)
+  if (data?.quiz_id)  return { mode: "sync_edge", quizId: data.quiz_id };
+  if (data?.deck_id)  return { mode: "sync_edge", deckId: data.deck_id };
+  if (data?.success)  return { mode: "sync_edge" };
+
+  throw new Error("Risposta inattesa dall'Edge Function");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GENERAZIONE DA FILE (con fallback)
+// GENERAZIONE DA FILE
 // ══════════════════════════════════════════════════════════════════════════════
 export async function generateFromFile(
-  file:  File | Blob,
-  type:  string,
-  token: string,
-): Promise<any> {
-  if (hasBackend) {
+  file:        File | Blob,
+  type:        string,
+  token:       string,
+  jobId:       string,
+  documentId?: string,
+  title?:      string,
+): Promise<GenerationResult> {
+  const isImage = file.type.startsWith("image/");
+
+  // File non-immagine → prova Cloud Run prima
+  if (!isImage) {
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -235,15 +245,15 @@ export async function generateFromFile(
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: formData,
-      }, 120_000);
-      if (res.ok) return await safeJsonParse(res);
-      console.warn(`[backendApi] Backend generate-from-file failed (${res.status}), falling back to Edge Function`);
-    } catch (e) {
-      console.warn("[backendApi] Backend generate-from-file unreachable:", e);
+      }, SYNC_TIMEOUT_MS);
+      if (res.ok) return { mode: "sync_backend", data: await safeJsonParse(res) };
+      console.warn(`[backendApi] Cloud Run generate-from-file failed (${res.status})`);
+    } catch (e: any) {
+      console.warn("[backendApi] Cloud Run generate-from-file unreachable:", e.message);
     }
   }
 
-  // Fallback: converte in base64 per Edge Function
+  // Fallback/immagini → Edge Function con base64
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload  = () => resolve(reader.result as string);
@@ -258,17 +268,35 @@ export async function generateFromFile(
   const edgeType = typeMap[type] || type;
 
   if (["summary", "outline", "smart_notes"].includes(edgeType)) {
-    const { data, error } = await supabase.functions.invoke("generate-summary", { body: { images: [dataUrl], format: edgeType } });
+    const { data, error } = await supabase.functions.invoke("generate-summary", {
+      body: { images: [dataUrl], format: edgeType },
+    });
     if (error) throw new Error(error.message || "Generazione sommario da immagine fallita");
-    return { result: { markdown: data?.content }, content: data?.content };
+    return { mode: "sync_backend", data: { result: { markdown: data?.content }, content: data?.content } };
   }
-  const { data, error } = await supabase.functions.invoke("generate-study-content", { body: { images: [dataUrl], type: edgeType } });
+
+  const { data, error } = await supabase.functions.invoke("generate-study-content", {
+    body: {
+      images:     [dataUrl],
+      type:       edgeType,
+      jobId,
+      documentId: documentId || null,
+      title:      title || null,
+      asyncMode:  true,
+    },
+  });
+
   if (error) throw new Error(error.message || "Generazione da file fallita");
-  return data;
+  if (data?.accepted && data?.jobId) return { mode: "async_edge", jobId: data.jobId };
+  if (data?.quiz_id)  return { mode: "sync_edge", quizId: data.quiz_id };
+  if (data?.deck_id)  return { mode: "sync_edge", deckId: data.deck_id };
+  if (data?.success)  return { mode: "sync_edge" };
+
+  throw new Error("Risposta inattesa dall'Edge Function");
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SAVE HELPERS — sempre su Supabase diretto
+// SAVE HELPERS — usati SOLO quando Cloud Run restituisce dati grezzi
 // ══════════════════════════════════════════════════════════════════════════════
 export async function saveQuizResult(userId: string, data: any, documentId?: string, title?: string): Promise<string> {
   const quizData  = data.quiz || data.result || data;
@@ -358,4 +386,11 @@ export async function saveMicroTaskResult(userId: string, data: any, title?: str
     );
   }
   return { parentId: parent.id, totalTasks: tasks.length };
+}
+
+// Legacy alias per altri componenti che usano ancora generateFromText
+export async function generateFromText(type: string, inputData: string, token: string): Promise<any> {
+  const result = await generateContent(type, inputData, token, "legacy");
+  if (result.mode === "sync_backend") return result.data;
+  throw new Error("Usa generateContent() per il flusso completo con async support");
 }

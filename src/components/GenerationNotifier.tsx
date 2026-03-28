@@ -61,7 +61,9 @@ const GenerationNotifier = () => {
   useEffect(() => {
     if (!user) return;
 
-    // Load active jobs once on mount
+    const STALE_MINUTES = 10; // job più vecchi di 10 min sono considerati zombie
+
+    // Carica job attivi al mount — pulisce automaticamente gli zombie
     supabase
       .from("generation_jobs")
       .select("id, status, content_type, title, total_items, error, created_at")
@@ -69,7 +71,31 @@ const GenerationNotifier = () => {
       .in("status", ["pending", "processing"])
       .order("created_at", { ascending: false })
       .then(({ data }) => {
-        if (data) setActiveJobs(data.filter((j) => !dismissedRef.current.has(j.id)));
+        if (!data) return;
+
+        const now    = Date.now();
+        const fresh: Job[] = [];
+        const stale:  string[] = [];
+
+        for (const j of data) {
+          const ageMs = now - new Date(j.created_at).getTime();
+          if (ageMs > STALE_MINUTES * 60 * 1000) {
+            stale.push(j.id);
+          } else if (!dismissedRef.current.has(j.id)) {
+            fresh.push(j);
+          }
+        }
+
+        // Marca i job zombie come errore in modo silenzioso
+        if (stale.length > 0) {
+          supabase.from("generation_jobs").update({
+            status: "error",
+            error: "Generazione interrotta (timeout o riavvio pagina)",
+            completed_at: new Date().toISOString(),
+          }).in("id", stale).then(() => {});
+        }
+
+        setActiveJobs(fresh);
       });
 
     // Realtime: zero polling — DB notifies us on every change

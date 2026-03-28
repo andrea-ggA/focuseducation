@@ -14,7 +14,7 @@ import mammoth from "mammoth";
 import VoiceNotes from "@/components/study/VoiceNotes";
 import { Link } from "react-router-dom";
 import {
-  generateFromText,
+  generateContent,
   generateFromFile,
   getAuthToken,
   saveQuizResult,
@@ -23,6 +23,7 @@ import {
   saveMindmapResult,
   saveMicroTaskResult,
   fetchYoutubeTranscript,
+  generateFromText,
 } from "@/lib/backendApi";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -305,8 +306,6 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
       return;
     }
 
-    // FIX: il tipo corretto per la spesa (quiz e flashcard costano entrambi CREDIT_COSTS.quiz,
-    // ma il messaggio di errore ora è coerente con l'azione effettiva)
     const creditAction = "quiz" as const;
     if (totalCredits < CREDIT_COSTS[creditAction]) {
       onInsufficientCredits?.(type === "flashcards" ? "flashcards" : "quiz");
@@ -321,7 +320,11 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
     setGenerating(type);
 
     try {
-      const token = await getAuthToken();
+      const token     = await getAuthToken();
+      const docTitle  = file?.name || (hasImages ? "Foto appunti" : "Studio");
+      const isFlash   = type === "flashcards";
+
+      // Upload file su Supabase Storage (opzionale, per storico)
       let documentId: string | undefined;
       if (file) {
         const filePath = `${user.id}/${Date.now()}_${file.name}`;
@@ -334,71 +337,148 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         }
       }
 
-      const docTitle = file?.name || (hasImages ? "Foto appunti" : "Studio");
-
-      // Create generation job for progress tracking
+      // Crea job per tracking progresso
       const { data: job } = await supabase.from("generation_jobs")
         .insert({
-          user_id: user.id,
-          content_type: type === "flashcards" ? "flashcards" : "quiz",
-          title: docTitle,
-          document_id: documentId || null,
-          status: "processing",
+          user_id:      user.id,
+          content_type: isFlash ? "flashcards" : "quiz",
+          title:        docTitle,
+          document_id:  documentId || null,
+          status:       "processing",
         })
         .select("id").single();
 
+      const jobId = job?.id ?? crypto.randomUUID();
+
       toast({
-        title: "🚀 Generazione avviata",
+        title:       "🚀 Generazione avviata",
         description: `Spesi ${CREDIT_COSTS[creditAction]} cr. Elaborazione in corso...`,
       });
 
-      // Call external backend
-      let data: any;
+      // ── Chiama il backend con routing intelligente ─────────────────────────
+      const inputText = `[LIVELLO_DISTRAZIONE:${distractionLevel}]\n${textContent}`;
+      let result;
+
       if (file && inputMode === "file" && textContent.trim()) {
-        // Text already extracted client-side from PDF/DOCX — use text path
-        data = await generateFromText(type, `[LIVELLO_DISTRAZIONE:${distractionLevel}]\n${textContent}`, token);
+        // Testo già estratto lato client da PDF/DOCX
+        result = await generateContent(type, inputText, token, jobId, documentId, docTitle);
       } else if (file && inputMode === "file") {
-        // Image-only file (no extracted text) — send raw file
-        data = await generateFromFile(file, type, token);
+        // File senza testo estratto (es. immagine)
+        result = await generateFromFile(file, type, token, jobId, documentId, docTitle);
       } else if (hasImages && !textContent.trim()) {
-        // FIX: passare tutte le immagini — la prima viene usata come file principale
-        // In futuro: refactorare generateFromFile per accettare File[]
-        data = await generateFromFile(images[0].file, type, token);
-        // TODO: supporto multi-immagine richiede refactoring del backend API
+        result = await generateFromFile(images[0].file, type, token, jobId, documentId, docTitle);
         if (images.length > 1) {
-          console.info(`[DocumentUpload] ${images.length - 1} immagini aggiuntive non ancora supportate dal backend. Solo la prima è stata inviata.`);
+          console.info(`[DocumentUpload] ${images.length - 1} immagini aggiuntive non supportate, usata solo la prima.`);
         }
       } else {
-        data = await generateFromText(type, `[LIVELLO_DISTRAZIONE:${distractionLevel}]
-${textContent}`, token);
+        result = await generateContent(type, inputText, token, jobId, documentId, docTitle);
       }
 
-      // Save result to Supabase
-      let resultId: string;
-      if (type === "flashcards") {
-        resultId = await saveFlashcardResult(user.id, data, documentId, docTitle);
-        onFlashcardsGenerated(resultId);
-      } else {
-        resultId = await saveQuizResult(user.id, data, documentId, docTitle);
-        onQuizGenerated(resultId);
+      // ── Gestisci il risultato in base alla modalità ──────────────────────
+      if (result.mode === "sync_backend") {
+        // Cloud Run ha restituito i dati grezzi → salva su Supabase
+        let resultId: string;
+        if (isFlash) {
+          resultId = await saveFlashcardResult(user.id, result.data, documentId, docTitle);
+          onFlashcardsGenerated(resultId);
+        } else {
+          resultId = await saveQuizResult(user.id, result.data, documentId, docTitle);
+          onQuizGenerated(resultId);
+        }
+        // Aggiorna job
+        if (job?.id) {
+          await supabase.from("generation_jobs").update({
+            status: "completed", result_id: resultId,
+            completed_at: new Date().toISOString(), error: null,
+          }).eq("id", job.id);
+        }
+        toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
+        setGenerating(null);
+
+      } else if (result.mode === "sync_edge") {
+        // Edge Function ha già salvato il risultato, usa l'ID direttamente
+        const resultId = result.quizId || result.deckId;
+        if (resultId) {
+          if (isFlash) onFlashcardsGenerated(resultId);
+          else         onQuizGenerated(resultId);
+          if (job?.id) {
+            await supabase.from("generation_jobs").update({
+              status: "completed", result_id: resultId,
+              completed_at: new Date().toISOString(), error: null,
+            }).eq("id", job.id);
+          }
+        }
+        toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
+        setGenerating(null);
+
+      } else if (result.mode === "async_edge") {
+        // Edge Function processa in background — ascolta via Realtime
+        toast({
+          title:       "⏳ Elaborazione in corso",
+          description: "Il documento è grande, la generazione continua in background. Ti avviseremo al termine.",
+        });
+
+        // Sottoscrizione Realtime al job — si risolve quando il job è completato
+        const channel = supabase
+          .channel(`job_${result.jobId}`)
+          .on(
+            "postgres_changes",
+            {
+              event:  "UPDATE",
+              schema: "public",
+              table:  "generation_jobs",
+              filter: `id=eq.${result.jobId}`,
+            },
+            async (payload) => {
+              const updated = payload.new as any;
+
+              if (updated.status === "completed" && updated.result_id) {
+                supabase.removeChannel(channel);
+                if (isFlash) onFlashcardsGenerated(updated.result_id);
+                else         onQuizGenerated(updated.result_id);
+                setGenerating(null);
+              } else if (updated.status === "error") {
+                supabase.removeChannel(channel);
+                toast({
+                  title:       "Generazione fallita",
+                  description: updated.error || "Si è verificato un errore. Riprova.",
+                  variant:     "destructive",
+                });
+                await refreshCredits();
+                setGenerating(null);
+              }
+            }
+          )
+          .subscribe();
+
+        // Timeout di sicurezza: dopo 8 minuti considera fallito
+        setTimeout(async () => {
+          supabase.removeChannel(channel);
+          // Controlla lo stato attuale prima di dichiarare fallimento
+          const { data: jobCheck } = await supabase
+            .from("generation_jobs")
+            .select("status, result_id")
+            .eq("id", result.jobId)
+            .single();
+
+          if (jobCheck?.status === "completed" && jobCheck?.result_id) {
+            if (isFlash) onFlashcardsGenerated(jobCheck.result_id);
+            else         onQuizGenerated(jobCheck.result_id);
+          } else if (jobCheck?.status !== "completed") {
+            toast({
+              title:       "Tempo scaduto",
+              description: "La generazione ha impiegato troppo. Controlla la libreria tra qualche minuto.",
+              variant:     "destructive",
+            });
+          }
+          setGenerating(null);
+        }, 8 * 60 * 1000);
       }
 
-      // Mark job as completed
-      if (job?.id) {
-        await supabase.from("generation_jobs").update({
-          status: "completed",
-          result_id: resultId,
-          completed_at: new Date().toISOString(),
-          error: null,
-        }).eq("id", job.id);
-      }
-
-      toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
     } catch (err: any) {
       console.error(err);
       toast({ title: "Errore", description: err.message || "Generazione fallita. Riprova.", variant: "destructive" });
       await refreshCredits();
-    } finally {
       setGenerating(null);
     }
   };

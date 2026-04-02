@@ -25,7 +25,7 @@ const BACKEND_URL = (() => {
 })();
 
 // Soglia: sopra questa dimensione usiamo asyncMode per quiz/flashcard
-export const ASYNC_THRESHOLD = 80_000;
+export const ASYNC_THRESHOLD = 30_000;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export async function getAuthToken(): Promise<string> {

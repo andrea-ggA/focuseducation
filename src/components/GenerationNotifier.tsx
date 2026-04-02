@@ -68,18 +68,19 @@ const GenerationNotifier = () => {
     // Carica job attivi al mount — pulisce automaticamente gli zombie
     supabase
       .from("generation_jobs")
-      .select("id, status, content_type, title, total_items, error, created_at, progress_message, progress_pct")
+      .select("*")
       .eq("user_id", user.id)
       .in("status", ["pending", "processing"])
       .order("created_at", { ascending: false })
       .then(({ data }) => {
-        if (!data) return;
+        const jobs = (data ?? []) as unknown as Job[];
+        if (jobs.length === 0) return;
 
         const now    = Date.now();
         const fresh: Job[] = [];
         const stale:  string[] = [];
 
-        for (const j of data) {
+        for (const j of jobs) {
           const ageMs = now - new Date(j.created_at).getTime();
           if (ageMs > STALE_MINUTES * 60 * 1000) {
             stale.push(j.id);

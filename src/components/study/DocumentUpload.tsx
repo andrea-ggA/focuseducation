@@ -14,16 +14,15 @@ import mammoth from "mammoth";
 import VoiceNotes from "@/components/study/VoiceNotes";
 import { Link } from "react-router-dom";
 import {
-  generateContent,
-  generateFromFile,
-  getAuthToken,
-  saveQuizResult,
-  saveFlashcardResult,
+  generateQuizOrFlashcards,
+  generateQuizOrFlashcardsFromImages,
+  generateSummary,
+  generateMindmap,
+  generateMicroTasks,
   saveSummaryResult,
   saveMindmapResult,
   saveMicroTaskResult,
   fetchYoutubeTranscript,
-  generateFromText,
 } from "@/lib/backendApi";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -281,26 +280,236 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
   };
 
   const hasContent = file || textContent.trim() || images.length > 0;
-  const hasImages = images.length > 0;
-  const LARGE_CONTENT_BACKGROUND_THRESHOLD = 50000;
+  const hasImages  = images.length > 0;
 
-  const shouldUseBackgroundGeneration = useCallback(() => {
-    return textContent.trim().length >= LARGE_CONTENT_BACKGROUND_THRESHOLD;
-  }, [textContent]);
-
-  const markGenerationJobError = useCallback(async (jobId?: string, message?: string) => {
-    if (!jobId) return;
-    await supabase
-      .from("generation_jobs")
-      .update({
-        status: "error",
-        error: message || "Generazione fallita.",
-        completed_at: new Date().toISOString(),
-      })
-      .eq("id", jobId);
-  }, []);
-
+  // ──────────────────────────────────────────────────────────────────────────
+  // GENERA QUIZ / FLASHCARD
+  // ──────────────────────────────────────────────────────────────────────────
   const generate = async (type: "quiz" | "flashcards" | "quiz_gamified") => {
+    if (!hasContent || !user) {
+      toast({ title: "Nessun contenuto", description: "Carica un documento, incolla del testo o aggiungi delle foto.", variant: "destructive" });
+      return;
+    }
+
+    const creditAction = "quiz" as const;
+    if (totalCredits < CREDIT_COSTS[creditAction]) { onInsufficientCredits?.(type === "flashcards" ? "flashcards" : "quiz"); return; }
+    const spent = await spendCredits(creditAction);
+    if (!spent) { onInsufficientCredits?.(type === "flashcards" ? "flashcards" : "quiz"); return; }
+
+    setGenerating(type);
+
+    try {
+      const docTitle = file?.name || (hasImages ? "Foto appunti" : "Studio");
+      const isFlash  = type === "flashcards";
+
+      // Upload file opzionale per storico
+      let documentId: string | undefined;
+      if (file) {
+        const filePath = `${user.id}/${Date.now()}_${file.name}`;
+        const { error: uploadErr } = await supabase.storage.from("documents").upload(filePath, file);
+        if (!uploadErr) {
+          const { data: doc } = await supabase.from("documents")
+            .insert({ user_id: user.id, title: file.name, file_type: file.type, file_url: filePath })
+            .select("id").single();
+          documentId = doc?.id;
+        }
+      }
+
+      // Crea job per tracking
+      const { data: job } = await supabase.from("generation_jobs")
+        .insert({ user_id: user.id, content_type: isFlash ? "flashcards" : "quiz", title: docTitle, document_id: documentId || null, status: "processing" })
+        .select("id").single();
+      const jobId = job?.id ?? crypto.randomUUID();
+
+      toast({ title: "🚀 Generazione avviata", description: `Spesi ${CREDIT_COSTS[creditAction]} cr. Elaborazione in corso...` });
+
+      // ── Prepara contenuto e chiama l'Edge Function ────────────────────────
+      const inputText = `[LIVELLO_DISTRAZIONE:${distractionLevel}]\n${textContent}`;
+      let result;
+
+      if (hasImages && !textContent.trim()) {
+        // Immagini → Edge Function multimodale
+        const dataUrls = await Promise.all(
+          images.map(img => new Promise<string>((ok, err) => {
+            const r = new FileReader();
+            r.onload  = () => ok(r.result as string);
+            r.onerror = err;
+            r.readAsDataURL(img.file);
+          }))
+        );
+        result = await generateQuizOrFlashcardsFromImages(dataUrls, type, jobId, documentId, docTitle);
+      } else {
+        // Testo (estratto da file o incollato) → Edge Function
+        const content = textContent.trim() ? inputText : "";
+        if (!content) throw new Error("Nessun testo da elaborare");
+        result = await generateQuizOrFlashcards(type, content, jobId, documentId, docTitle);
+      }
+
+      // ── Gestisci risultato ────────────────────────────────────────────────
+      if (result.mode === "sync_edge") {
+        // Edge Function ha già salvato — usa l'ID direttamente
+        const resultId = result.quizId || result.deckId;
+        if (resultId) {
+          if (job?.id) await supabase.from("generation_jobs").update({ status: "completed", result_id: resultId, completed_at: new Date().toISOString(), error: null }).eq("id", job.id);
+          if (isFlash) onFlashcardsGenerated(resultId);
+          else         onQuizGenerated(resultId);
+        }
+        toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
+        setGenerating(null);
+
+      } else if (result.mode === "async_edge") {
+        // Documento grande — elaborazione in background, ascolto via Realtime
+        toast({ title: "⏳ Documento grande in elaborazione", description: "La generazione continua in background. Ti avviseremo al termine." });
+
+        const ch = supabase.channel(`job_${result.jobId}`)
+          .on("postgres_changes", { event: "UPDATE", schema: "public", table: "generation_jobs", filter: `id=eq.${result.jobId}` }, async (payload) => {
+            const upd = payload.new as any;
+            if (upd.status === "completed" && upd.result_id) {
+              supabase.removeChannel(ch);
+              if (isFlash) onFlashcardsGenerated(upd.result_id);
+              else         onQuizGenerated(upd.result_id);
+              toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
+              setGenerating(null);
+            } else if (upd.status === "error") {
+              supabase.removeChannel(ch);
+              toast({ title: "Generazione fallita", description: upd.error || "Errore. Riprova.", variant: "destructive" });
+              await refreshCredits();
+              setGenerating(null);
+            }
+          })
+          .subscribe();
+
+        // Safety timeout: 10 minuti
+        setTimeout(async () => {
+          supabase.removeChannel(ch);
+          const { data: jc } = await supabase.from("generation_jobs").select("status, result_id").eq("id", result.jobId).single();
+          if (jc?.status === "completed" && jc?.result_id) {
+            if (isFlash) onFlashcardsGenerated(jc.result_id);
+            else         onQuizGenerated(jc.result_id);
+          } else {
+            toast({ title: "Timeout generazione", description: "Controlla la libreria tra qualche minuto.", variant: "destructive" });
+          }
+          setGenerating(null);
+        }, 10 * 60 * 1000);
+      }
+
+    } catch (err: any) {
+      console.error("[generate] error:", err);
+      toast({ title: "Errore generazione", description: err.message || "Generazione fallita. Riprova.", variant: "destructive" });
+      await refreshCredits();
+      setGenerating(null);
+    }
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // SCOMPONI IN MICRO-TASK
+  // ──────────────────────────────────────────────────────────────────────────
+  const handleDecompose = async () => {
+    if (!textContent.trim() || !user) {
+      toast({ title: "Nessun contenuto", description: "Carica un documento o incolla del testo.", variant: "destructive" });
+      return;
+    }
+    if (totalCredits < CREDIT_COSTS.decompose) { onInsufficientCredits?.("decompose"); return; }
+    const spent = await spendCredits("decompose");
+    if (!spent) { onInsufficientCredits?.("decompose"); return; }
+
+    setGenerating("decompose");
+    try {
+      const { tasks } = await generateMicroTasks(textContent);
+      const result = await saveMicroTaskResult(user.id, tasks, file?.name || "Studio");
+      toast({ title: "📋 Piano creato!", description: `${result.totalTasks} micro-task generati. Spesi ${CREDIT_COSTS.decompose} cr.` });
+      onDecompose?.();
+    } catch (err: any) {
+      console.error("[decompose] error:", err);
+      toast({ title: "Errore", description: err.message || "Scomposizione fallita.", variant: "destructive" });
+      await refreshCredits();
+    } finally {
+      setGenerating(null);
+    }
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // MAPPA CONCETTUALE
+  // ──────────────────────────────────────────────────────────────────────────
+  const handleMindMap = async () => {
+    if (!textContent.trim() || !user) {
+      toast({ title: "Nessun contenuto", description: "Carica un documento o incolla del testo.", variant: "destructive" });
+      return;
+    }
+    if (totalCredits < CREDIT_COSTS.mindmap) { onInsufficientCredits?.("mindmap"); return; }
+    const spent = await spendCredits("mindmap");
+    if (!spent) { onInsufficientCredits?.("mindmap"); return; }
+
+    setGenerating("mindmap");
+    try {
+      const { nodes, edges } = await generateMindmap(textContent);
+      const title = file?.name || textContent.trim().substring(0, 60);
+      await saveMindmapResult(user.id, nodes, edges, title);
+      toast({ title: "🧠 Mappa creata e salvata!", description: `${nodes.length} concetti estratti. Spesi ${CREDIT_COSTS.mindmap} cr.` });
+      onMindMap?.(nodes, edges);
+    } catch (err: any) {
+      console.error("[mindmap] error:", err);
+      toast({ title: "Errore", description: err.message || "Generazione mappa fallita.", variant: "destructive" });
+      await refreshCredits();
+    } finally {
+      setGenerating(null);
+    }
+  };
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // RIASSUNTO / SCHEMA / APPUNTI SMART
+  // ──────────────────────────────────────────────────────────────────────────
+  const handleSummary = async (format: "summary" | "outline" | "smart_notes") => {
+    if (!hasContent || !user) {
+      toast({ title: "Nessun contenuto", description: "Carica un documento, incolla del testo o aggiungi delle foto.", variant: "destructive" });
+      return;
+    }
+    if (!canUseSummaries) {
+      toast({ title: "Funzione Hyperfocus Master", description: "Riassunti, schemi e appunti smart richiedono il piano Hyperfocus Master.", variant: "destructive" });
+      return;
+    }
+    if (totalCredits < CREDIT_COSTS.summary) { onInsufficientCredits?.("summary"); return; }
+    const spent = await spendCredits("summary");
+    if (!spent) { onInsufficientCredits?.("summary"); return; }
+
+    setGenerating(format);
+    const formatLabels = { summary: "Riassunto", outline: "Schema", smart_notes: "Appunti Smart" };
+    try {
+      const docTitle = file?.name || (hasImages ? "Foto appunti" : "Studio");
+      toast({ title: `🚀 ${formatLabels[format]} in generazione`, description: `Spesi ${CREDIT_COSTS.summary} cr.` });
+
+      let markdown: string;
+
+      if (hasImages && !textContent.trim()) {
+        // Immagini → Edge Function
+        const dataUrls = await Promise.all(
+          images.map(img => new Promise<string>((ok, err) => {
+            const r = new FileReader();
+            r.onload  = () => ok(r.result as string);
+            r.onerror = err;
+            r.readAsDataURL(img.file);
+          }))
+        );
+        markdown = await generateSummary(format, "", dataUrls);
+      } else {
+        markdown = await generateSummary(format, textContent.trim() || "");
+      }
+
+      const resultId = await saveSummaryResult(user.id, markdown, format, docTitle);
+
+      // Notifica il parent component
+      const summaryData = { content: markdown, format, title: docTitle };
+      onSummaryGenerated?.(markdown, format, docTitle);
+
+      toast({ title: `✅ ${formatLabels[format]} completato!`, description: "Disponibile nella tua libreria." });
+    } catch (err: any) {
+      console.error("[summary] error:", err);
+      toast({ title: "Errore", description: err.message || "Generazione fallita.", variant: "destructive" });
+      await refreshCredits();
+    } finally {
+      setGenerating(null);
+    }
+  };
     if (!hasContent || !user) {
       toast({ title: "Nessun contenuto", description: "Carica un documento, incolla del testo o aggiungi delle foto.", variant: "destructive" });
       return;
@@ -355,278 +564,8 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         description: `Spesi ${CREDIT_COSTS[creditAction]} cr. Elaborazione in corso...`,
       });
 
-      // ── Chiama il backend con routing intelligente ─────────────────────────
-      const inputText = `[LIVELLO_DISTRAZIONE:${distractionLevel}]\n${textContent}`;
-      let result;
 
-      if (file && inputMode === "file" && textContent.trim()) {
-        // Testo già estratto lato client da PDF/DOCX
-        result = await generateContent(type, inputText, token, jobId, documentId, docTitle);
-      } else if (file && inputMode === "file") {
-        // File senza testo estratto (es. immagine)
-        result = await generateFromFile(file, type, token, jobId, documentId, docTitle);
-      } else if (hasImages && !textContent.trim()) {
-        result = await generateFromFile(images[0].file, type, token, jobId, documentId, docTitle);
-        if (images.length > 1) {
-          console.info(`[DocumentUpload] ${images.length - 1} immagini aggiuntive non supportate, usata solo la prima.`);
-        }
-      } else {
-        result = await generateContent(type, inputText, token, jobId, documentId, docTitle);
-      }
 
-      // ── Gestisci il risultato in base alla modalità ──────────────────────
-      if (result.mode === "sync_backend") {
-        // Cloud Run ha restituito i dati grezzi → salva su Supabase
-        let resultId: string;
-        if (isFlash) {
-          resultId = await saveFlashcardResult(user.id, result.data, documentId, docTitle);
-          onFlashcardsGenerated(resultId);
-        } else {
-          resultId = await saveQuizResult(user.id, result.data, documentId, docTitle);
-          onQuizGenerated(resultId);
-        }
-        // Aggiorna job
-        if (job?.id) {
-          await supabase.from("generation_jobs").update({
-            status: "completed", result_id: resultId,
-            completed_at: new Date().toISOString(), error: null,
-          }).eq("id", job.id);
-        }
-        toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
-        setGenerating(null);
-
-      } else if (result.mode === "sync_edge") {
-        // Edge Function ha già salvato il risultato, usa l'ID direttamente
-        const resultId = result.quizId || result.deckId;
-        if (resultId) {
-          if (isFlash) onFlashcardsGenerated(resultId);
-          else         onQuizGenerated(resultId);
-          if (job?.id) {
-            await supabase.from("generation_jobs").update({
-              status: "completed", result_id: resultId,
-              completed_at: new Date().toISOString(), error: null,
-            }).eq("id", job.id);
-          }
-        }
-        toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
-        setGenerating(null);
-
-      } else if (result.mode === "async_edge") {
-        // Edge Function processa in background — ascolta via Realtime
-        toast({
-          title:       "⏳ Elaborazione in corso",
-          description: "Il documento è grande, la generazione continua in background. Ti avviseremo al termine.",
-        });
-
-        // Sottoscrizione Realtime al job — si risolve quando il job è completato
-        const channel = supabase
-          .channel(`job_${result.jobId}`)
-          .on(
-            "postgres_changes",
-            {
-              event:  "UPDATE",
-              schema: "public",
-              table:  "generation_jobs",
-              filter: `id=eq.${result.jobId}`,
-            },
-            async (payload) => {
-              const updated = payload.new as any;
-
-              if (updated.status === "completed" && updated.result_id) {
-                supabase.removeChannel(channel);
-                if (isFlash) onFlashcardsGenerated(updated.result_id);
-                else         onQuizGenerated(updated.result_id);
-                setGenerating(null);
-              } else if (updated.status === "error") {
-                supabase.removeChannel(channel);
-                toast({
-                  title:       "Generazione fallita",
-                  description: updated.error || "Si è verificato un errore. Riprova.",
-                  variant:     "destructive",
-                });
-                await refreshCredits();
-                setGenerating(null);
-              }
-            }
-          )
-          .subscribe();
-
-        // Timeout di sicurezza: dopo 8 minuti considera fallito
-        setTimeout(async () => {
-          supabase.removeChannel(channel);
-          // Controlla lo stato attuale prima di dichiarare fallimento
-          const { data: jobCheck } = await supabase
-            .from("generation_jobs")
-            .select("status, result_id")
-            .eq("id", result.jobId)
-            .single();
-
-          if (jobCheck?.status === "completed" && jobCheck?.result_id) {
-            if (isFlash) onFlashcardsGenerated(jobCheck.result_id);
-            else         onQuizGenerated(jobCheck.result_id);
-          } else if (jobCheck?.status !== "completed") {
-            toast({
-              title:       "Tempo scaduto",
-              description: "La generazione ha impiegato troppo. Controlla la libreria tra qualche minuto.",
-              variant:     "destructive",
-            });
-          }
-          setGenerating(null);
-        }, 8 * 60 * 1000);
-      }
-
-    } catch (err: any) {
-      console.error(err);
-      toast({ title: "Errore", description: err.message || "Generazione fallita. Riprova.", variant: "destructive" });
-      await refreshCredits();
-      setGenerating(null);
-    }
-  };
-
-  const handleDecompose = async () => {
-    if (!textContent.trim() || !user) {
-      toast({ title: "Nessun contenuto", description: "Carica un documento o incolla del testo.", variant: "destructive" });
-      return;
-    }
-
-    if (totalCredits < CREDIT_COSTS.decompose) {
-      onInsufficientCredits?.("decompose");
-      return;
-    }
-    const spent = await spendCredits("decompose");
-    if (!spent) {
-      onInsufficientCredits?.("decompose");
-      return;
-    }
-
-    setGenerating("decompose");
-    try {
-      const token = await getAuthToken();
-      const data = await generateFromText("decompose", textContent, token);
-      const result = await saveMicroTaskResult(user.id, data, file?.name || "Studio");
-
-      toast({
-        title: "📋 Piano creato!",
-        description: `${result.totalTasks} micro-task generati. Spesi ${CREDIT_COSTS.decompose} cr.`,
-      });
-      onDecompose?.();
-    } catch (err: any) {
-      console.error(err);
-      toast({ title: "Errore", description: err.message || "Scomposizione fallita.", variant: "destructive" });
-      await refreshCredits();
-    } finally {
-      setGenerating(null);
-    }
-  };
-
-  const handleMindMap = async () => {
-    if (!textContent.trim() || !user) {
-      toast({ title: "Nessun contenuto", description: "Carica un documento o incolla del testo.", variant: "destructive" });
-      return;
-    }
-
-    if (totalCredits < CREDIT_COSTS.mindmap) {
-      onInsufficientCredits?.("mindmap");
-      return;
-    }
-    const spent = await spendCredits("mindmap");
-    if (!spent) {
-      onInsufficientCredits?.("mindmap");
-      return;
-    }
-
-    setGenerating("mindmap");
-    try {
-      const token = await getAuthToken();
-      const data = await generateFromText("mindmap", textContent, token);
-      const title = file?.name || textContent.trim().substring(0, 60);
-      const { nodes, edges } = await saveMindmapResult(user.id, data, title);
-
-      toast({ title: "🧠 Mappa creata e salvata!", description: `${nodes.length} concetti estratti. Spesi ${CREDIT_COSTS.mindmap} cr.` });
-      onMindMap?.(nodes, edges);
-    } catch (err: any) {
-      console.error(err);
-      toast({ title: "Errore", description: err.message || "Generazione mappa fallita.", variant: "destructive" });
-      await refreshCredits();
-    } finally {
-      setGenerating(null);
-    }
-  };
-
-  const handleSummary = async (format: "summary" | "outline" | "smart_notes") => {
-    if (!hasContent || !user) {
-      toast({ title: "Nessun contenuto", description: "Carica un documento, incolla del testo o aggiungi delle foto.", variant: "destructive" });
-      return;
-    }
-    if (!canUseSummaries) {
-      toast({ title: "Funzione Hyperfocus Master", description: "Riassunti, schemi e appunti smart sono disponibili con il piano Hyperfocus Master.", variant: "destructive" });
-      return;
-    }
-    if (totalCredits < CREDIT_COSTS.summary) {
-      onInsufficientCredits?.("summary");
-      return;
-    }
-    const spent = await spendCredits("summary");
-    if (!spent) {
-      onInsufficientCredits?.("summary");
-      return;
-    }
-
-    setGenerating(format);
-    try {
-      const token = await getAuthToken();
-      const docTitle = file?.name || (hasImages ? "Foto appunti" : "Studio");
-
-      // Create generation job for progress tracking
-      const { data: job } = await supabase.from("generation_jobs")
-        .insert({
-          user_id: user.id,
-          content_type: format,
-          title: docTitle,
-          status: "processing",
-        })
-        .select("id").single();
-
-      const formatLabels = { summary: "Riassunto", outline: "Schema", smart_notes: "Appunti Smart" };
-      toast({
-        title: `🚀 Generazione ${formatLabels[format]} avviata`,
-        description: `Spesi ${CREDIT_COSTS.summary} cr. Elaborazione in corso...`,
-      });
-
-      // Call external backend
-      let data: any;
-      if (file && inputMode === "file" && textContent.trim()) {
-        data = await generateFromText(format, textContent, token);
-      } else if (file && inputMode === "file") {
-        data = await generateFromFile(file, format, token);
-      } else if (hasImages && !textContent.trim()) {
-        data = await generateFromFile(images[0].file, format, token);
-      } else {
-        data = await generateFromText(format, textContent, token);
-      }
-
-      // Save result to Supabase
-      const resultId = await saveSummaryResult(user.id, data, format, docTitle);
-
-      // Mark job as completed
-      if (job?.id) {
-        await supabase.from("generation_jobs").update({
-          status: "completed",
-          result_id: resultId,
-          completed_at: new Date().toISOString(),
-          error: null,
-        }).eq("id", job.id);
-      }
-
-      toast({ title: `✅ ${formatLabels[format]} completato!`, description: "Disponibile nella tua libreria." });
-    } catch (err: any) {
-      console.error(err);
-      toast({ title: "Errore", description: err.message || "Generazione fallita.", variant: "destructive" });
-      await refreshCredits();
-    } finally {
-      setGenerating(null);
-    }
-  };
 
   return (
     <div className="space-y-6">

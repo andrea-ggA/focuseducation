@@ -85,7 +85,9 @@ export function chunkBySentences(text: string, maxChars = 28_000, overlap = 800)
     }
     const chunk = text.substring(start, end).trim();
     if (chunk.length > 100) chunks.push(chunk);
-    start = Math.max(start + 1, end - overlap);
+    if (end >= text.length) break;
+    const nextStart = Math.max(0, end - overlap);
+    start = nextStart <= start ? end : nextStart;
   }
   return chunks;
 }

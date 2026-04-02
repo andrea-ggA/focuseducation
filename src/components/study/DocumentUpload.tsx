@@ -298,6 +298,7 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
     if (!spent) { onInsufficientCredits?.(type === "flashcards" ? "flashcards" : "quiz"); return; }
 
     setGenerating(type);
+    let createdJobId: string | null = null;
 
     try {
       const docTitle = file?.name || (hasImages ? "Foto appunti" : "Studio");
@@ -321,6 +322,7 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         .insert({ user_id: user.id, content_type: isFlash ? "flashcards" : "quiz", title: docTitle, document_id: documentId || null, status: "processing" })
         .select("id").single();
       const jobId = job?.id ?? crypto.randomUUID();
+      createdJobId = jobId;
 
       toast({ title: "🚀 Generazione avviata", description: `Spesi ${CREDIT_COSTS[creditAction]} cr. Elaborazione in corso...` });
 
@@ -396,6 +398,13 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
 
     } catch (err: any) {
       console.error("[generate] error:", err);
+      if (createdJobId) {
+        await supabase.from("generation_jobs").update({
+          status: "error",
+          error: err.message || "Generazione fallita",
+          completed_at: new Date().toISOString(),
+        }).eq("id", createdJobId);
+      }
       toast({ title: "Errore generazione", description: err.message || "Generazione fallita. Riprova.", variant: "destructive" });
       await refreshCredits();
       setGenerating(null);

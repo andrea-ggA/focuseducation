@@ -111,8 +111,12 @@ function chunkBySentences(text: string, maxChars = 28_000, overlap = 800): strin
     const chunk = text.substring(start, end).trim();
     if (chunk.length > 100) chunks.push(chunk);
 
-    // Avanza con overlap per mantenere contesto tra chunk
-    start = Math.max(start + 1, end - overlap);
+    if (end >= text.length) break;
+
+    // Avanza con overlap per mantenere contesto tra chunk,
+    // evitando loop quasi infiniti sugli ultimi caratteri.
+    const nextStart = Math.max(0, end - overlap);
+    start = nextStart <= start ? end : nextStart;
   }
 
   return chunks;
@@ -170,6 +174,29 @@ async function callAI(
 }
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+
+async function updateJob(
+  supabase: ReturnType<typeof createClient>,
+  jobId: string | undefined,
+  updates: Record<string, unknown>,
+) {
+  if (!jobId) return;
+
+  const { error } = await supabase.from("generation_jobs").update(updates).eq("id", jobId);
+  if (!error) return;
+
+  const fallback = Object.fromEntries(
+    Object.entries(updates).filter(([key]) => key !== "progress_message" && key !== "progress_pct"),
+  );
+
+  if (Object.keys(fallback).length === 0 || Object.keys(fallback).length === Object.keys(updates).length) {
+    console.warn("generation_jobs update failed:", error.message);
+    return;
+  }
+
+  const { error: fallbackError } = await supabase.from("generation_jobs").update(fallback).eq("id", jobId);
+  if (fallbackError) console.warn("generation_jobs fallback update failed:", fallbackError.message);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // JSON EXTRACTION — con partial recovery
@@ -427,9 +454,9 @@ serve(async (req) => {
 
     // ── Async mode ────────────────────────────────────────────────────────────
     if (asyncMode && !internalRun) {
-      if (jobId) await supabase.from("generation_jobs").update({
+      await updateJob(supabase, jobId, {
         status: "processing", progress_message: "Avvio in background…",
-      }).eq("id", jobId);
+      });
 
       (globalThis as any).EdgeRuntime?.waitUntil((async () => {
         try {
@@ -438,13 +465,13 @@ serve(async (req) => {
             headers: { "Content-Type": "application/json", Authorization: authHeader, apikey: Deno.env.get("SUPABASE_ANON_KEY")! },
             body: JSON.stringify({ content, type, documentId, title, jobId, images, asyncMode: false, internalRun: true }),
           });
-          if (!r.ok && jobId) await supabase.from("generation_jobs").update({
+          if (!r.ok) await updateJob(supabase, jobId, {
             status: "error", error: `Errore avvio (${r.status})`, completed_at: new Date().toISOString(),
-          }).eq("id", jobId);
+          });
         } catch (err: any) {
-          if (jobId) await supabase.from("generation_jobs").update({
+          await updateJob(supabase, jobId, {
             status: "error", error: err?.message || "Errore", completed_at: new Date().toISOString(),
-          }).eq("id", jobId);
+          });
         }
       })());
 
@@ -470,13 +497,13 @@ serve(async (req) => {
     const GEMINI_API_KEY = Deno.env.get("GOOGLE_GEMINI_API_KEY");
     if (!GEMINI_API_KEY) throw new Error("GOOGLE_GEMINI_API_KEY not configured");
 
-    if (jobId) await supabase.from("generation_jobs").update({ status: "processing" }).eq("id", jobId);
+    await updateJob(supabase, jobId, { status: "processing" });
 
     // ═════════════════════════════════════════════════════════════════════════
     // PATH IMMAGINI
     // ═════════════════════════════════════════════════════════════════════════
     if (hasImages) {
-      if (jobId) await supabase.from("generation_jobs").update({ progress_message: "Analisi immagini…" }).eq("id", jobId);
+      await updateJob(supabase, jobId, { progress_message: "Analisi immagini…" });
       const N    = 20;
       const lang = "Genera nella lingua del testo visibile. Default: italiano.";
       const isQuiz = type !== "flashcards";
@@ -543,10 +570,10 @@ ${lang} ESATTAMENTE ${N} flashcard. SOLO JSON.`;
         resultId=deck.id; totalItems=finalC.length;
       }
 
-      if (jobId) await supabase.from("generation_jobs").update({
+      await updateJob(supabase, jobId, {
         status:"completed", result_id:resultId, total_items:totalItems,
         completed_at:new Date().toISOString(), error:null,
-      }).eq("id", jobId);
+      });
 
       return new Response(JSON.stringify(isQuiz
         ? {success:true,quiz_id:resultId,total_questions:totalItems,from_images:true}
@@ -558,9 +585,9 @@ ${lang} ESATTAMENTE ${N} flashcard. SOLO JSON.`;
     // PATH TESTO — pipeline ottimizzato
     // ═════════════════════════════════════════════════════════════════════════
 
-    if (jobId) await supabase.from("generation_jobs").update({
+    await updateJob(supabase, jobId, {
       progress_message: "Analisi documento…",
-    }).eq("id", jobId);
+    });
 
     // ── STEP 0: Language detection + Topic outline IN PARALLELO ──────────────
     // Risparmio: ~4-6 secondi rispetto all'esecuzione sequenziale precedente.
@@ -696,11 +723,11 @@ EXACTLY ${ITEMS_PER_CHUNK} flashcards. ONLY valid JSON.`;
           const etaMs   = completedCount > 0
             ? Math.round((elapsed / completedCount) * (nChunks - completedCount)) : null;
           const eta     = etaMs ? ` · ~${Math.max(1, Math.ceil(etaMs/1000))}s` : "";
-          await supabase.from("generation_jobs").update({
+          await updateJob(supabase, jobId, {
             total_items:      soFar,
             progress_message: `Sezione ${Math.min(completedCount+1,nChunks)} di ${nChunks}… ${soFar} elementi${eta}`,
             progress_pct:     Math.round((completedCount / nChunks) * 100),
-          }).eq("id", jobId);
+          });
         } catch { /* non critico */ }
       }, 2500);
     }
@@ -779,10 +806,10 @@ EXACTLY ${ITEMS_PER_CHUNK} flashcards. ONLY valid JSON.`;
       console.log(`Deck: ${deck.id} · ${rows.length} cards`);
     }
 
-    if (jobId) await supabase.from("generation_jobs").update({
+    await updateJob(supabase, jobId, {
       status:"completed", result_id:resultId, total_items:totalItems,
       completed_at:new Date().toISOString(), error:null, progress_pct:100, progress_message:null,
-    }).eq("id", jobId);
+    });
 
     return new Response(JSON.stringify(type==="flashcards"
       ? {success:true,deck_id:resultId,total_cards:totalItems,chunks_processed:nChunks,elapsed_seconds:elapsed}
@@ -795,9 +822,9 @@ EXACTLY ${ITEMS_PER_CHUNK} flashcards. ONLY valid JSON.`;
       const body = await req.clone().json().catch(() => ({}));
       if (body.jobId) {
         const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-        await sb.from("generation_jobs").update({
+        await updateJob(sb, body.jobId, {
           status:"error", error:e.message||"Errore sconosciuto", completed_at:new Date().toISOString(),
-        }).eq("id", body.jobId);
+        });
       }
     } catch {}
     return new Response(JSON.stringify({ error: e.message||"Unknown error" }), {

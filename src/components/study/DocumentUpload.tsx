@@ -23,6 +23,7 @@ import {
   saveMindmapResult,
   saveMicroTaskResult,
   fetchYoutubeTranscript,
+  getAuthToken,
 } from "@/lib/backendApi";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -510,62 +511,6 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
       setGenerating(null);
     }
   };
-    if (!hasContent || !user) {
-      toast({ title: "Nessun contenuto", description: "Carica un documento, incolla del testo o aggiungi delle foto.", variant: "destructive" });
-      return;
-    }
-
-    const creditAction = "quiz" as const;
-    if (totalCredits < CREDIT_COSTS[creditAction]) {
-      onInsufficientCredits?.(type === "flashcards" ? "flashcards" : "quiz");
-      return;
-    }
-    const spent = await spendCredits(creditAction);
-    if (!spent) {
-      onInsufficientCredits?.(type === "flashcards" ? "flashcards" : "quiz");
-      return;
-    }
-
-    setGenerating(type);
-
-    try {
-      const token     = await getAuthToken();
-      const docTitle  = file?.name || (hasImages ? "Foto appunti" : "Studio");
-      const isFlash   = type === "flashcards";
-
-      // Upload file su Supabase Storage (opzionale, per storico)
-      let documentId: string | undefined;
-      if (file) {
-        const filePath = `${user.id}/${Date.now()}_${file.name}`;
-        const { error: uploadErr } = await supabase.storage.from("documents").upload(filePath, file);
-        if (!uploadErr) {
-          const { data: doc } = await supabase.from("documents")
-            .insert({ user_id: user.id, title: file.name, file_type: file.type, file_url: filePath })
-            .select("id").single();
-          documentId = doc?.id;
-        }
-      }
-
-      // Crea job per tracking progresso
-      const { data: job } = await supabase.from("generation_jobs")
-        .insert({
-          user_id:      user.id,
-          content_type: isFlash ? "flashcards" : "quiz",
-          title:        docTitle,
-          document_id:  documentId || null,
-          status:       "processing",
-        })
-        .select("id").single();
-
-      const jobId = job?.id ?? crypto.randomUUID();
-
-      toast({
-        title:       "🚀 Generazione avviata",
-        description: `Spesi ${CREDIT_COSTS[creditAction]} cr. Elaborazione in corso...`,
-      });
-
-
-
 
   return (
     <div className="space-y-6">

@@ -23,6 +23,7 @@ import {
   saveMindmapResult,
   saveMicroTaskResult,
   fetchYoutubeTranscript,
+  getAuthToken,
 } from "@/lib/backendApi";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;

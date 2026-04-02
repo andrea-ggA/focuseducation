@@ -15,6 +15,8 @@ interface Job {
   total_items:      number | null;
   error:            string | null;
   created_at:       string;
+  progress_message?: string | null;
+  progress_pct?:     number | null;
 }
 
 // FIX: ora usa progress_message (colonna dedicata) invece di error
@@ -22,9 +24,9 @@ interface Job {
 function parseProgress(progressMessage: string | null, errorField: string | null) {
   const text = progressMessage || errorField;
   if (!text) return null;
-  const m = text.match(/sezione (\d+) di (\d+).*?(\d+) elementi/);
+  const m = text.match(/sezione\s+(\d+)\s+di\s+(\d+).*?(\d+)\s+elementi/i);
   if (!m) return null;
-  const etaMatch = text.match(/~(\d+)s rimanenti/);
+  const etaMatch = text.match(/~(\d+)s/i);
   return {
     section: parseInt(m[1]),
     total:   parseInt(m[2]),
@@ -66,7 +68,7 @@ const GenerationNotifier = () => {
     // Carica job attivi al mount — pulisce automaticamente gli zombie
     supabase
       .from("generation_jobs")
-      .select("id, status, content_type, title, total_items, error, created_at")
+      .select("id, status, content_type, title, total_items, error, created_at, progress_message, progress_pct")
       .eq("user_id", user.id)
       .in("status", ["pending", "processing"])
       .order("created_at", { ascending: false })
@@ -176,8 +178,22 @@ const GenerationNotifier = () => {
     <div className="fixed bottom-4 right-4 z-50 space-y-2">
       <AnimatePresence>
         {activeJobs.map((job) => {
-          const progress    = parseProgress(null, job.error);
-          const progressPct = progress ? Math.round((progress.section / progress.total) * 100) : 0;
+          const progress = parseProgress(job.progress_message ?? null, job.error);
+          const progressPct = Math.max(
+            0,
+            Math.min(
+              100,
+              typeof job.progress_pct === "number"
+                ? job.progress_pct
+                : progress
+                  ? Math.round((progress.section / progress.total) * 100)
+                  : 0,
+            ),
+          );
+          const hasDeterminateProgress = typeof job.progress_pct === "number" || !!progress;
+          const statusLabel = progress
+            ? `Analisi sezione ${progress.section} di ${progress.total}...`
+            : job.progress_message || `Generando ${TYPE_LABELS[job.content_type] || job.content_type}...`;
 
           return (
             <motion.div
@@ -191,16 +207,14 @@ const GenerationNotifier = () => {
                 <Loader2 className="h-5 w-5 text-primary animate-spin shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium text-card-foreground truncate">
-                    {progress
-                      ? `Analisi sezione ${progress.section} di ${progress.total}...`
-                      : `Generando ${TYPE_LABELS[job.content_type] || job.content_type}...`}
+                    {statusLabel}
                   </p>
                   <p className="text-xs text-muted-foreground truncate mt-0.5">
                     {job.title || "In elaborazione"}
                     {progress?.items ? ` · ${progress.items} elementi` : ""}
                     {progress?.eta   ? ` · ${progress.eta}`           : ""}
                   </p>
-                  {progress ? (
+                  {hasDeterminateProgress ? (
                     <div className="mt-2 space-y-1">
                       <Progress value={progressPct} className="h-1.5" />
                       <p className="text-[10px] text-muted-foreground">{progressPct}% completato</p>

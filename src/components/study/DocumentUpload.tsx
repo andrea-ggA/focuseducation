@@ -382,7 +382,8 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
           })
           .subscribe();
 
-        // Safety timeout: 10 minuti
+        // FIX 8: safety timeout ridotto 10min→3min. Con gemini-1.5-flash
+        // una generazione non dovrebbe mai superare 2min. Se supera 3min è hung.
         setTimeout(async () => {
           supabase.removeChannel(ch);
           const { data: jc } = await supabase.from("generation_jobs").select("status, result_id").eq("id", result.jobId).single();
@@ -393,7 +394,7 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
             toast({ title: "Timeout generazione", description: "Controlla la libreria tra qualche minuto.", variant: "destructive" });
           }
           setGenerating(null);
-        }, 10 * 60 * 1000);
+        }, 3 * 60 * 1000);
       }
 
     } catch (err: any) {

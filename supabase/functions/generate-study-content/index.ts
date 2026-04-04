@@ -187,7 +187,7 @@ async function callAI(
 }
 
 async function updateJob(
-  supabase: ReturnType<typeof createClient>,
+  supabase: any,
   jobId: string | undefined,
   updates: Record<string, unknown>,
 ) {

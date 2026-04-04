@@ -1,3 +1,21 @@
+// ╔══════════════════════════════════════════════════════════════════════════════╗
+// ║  DocumentUpload.tsx                                                          ║
+// ║                                                                              ║
+// ║  SEZIONI:                                                                    ║
+// ║  § 1  IMPORTS                                                                ║
+// ║  § 2  COSTANTI & TIPI  → SUPPORTED_EXTENSIONS, MAX_IMAGES, UploadedImage    ║
+// ║  § 3  FILE HELPERS     → extractTextFromPdf, extractTextFromDocx,            ║
+// ║                          readFileAsDataURL                                   ║
+// ║  § 4  PROPS            → DocumentUploadProps interface                       ║
+// ║  § 5  COMPONENT STATE  → useState, useRef, timer YouTube                     ║
+// ║  § 6  HANDLER: FILE    → handleFileSelect                                    ║
+// ║  § 7  HANDLER: IMMAGINI → handleImageSelect, removeImage                    ║
+// ║  § 8  HANDLER: YOUTUBE → handleYoutubeImport                                ║
+// ║  § 9  HANDLER: GENERA  → generate (quiz/flashcard)                           ║
+// ║  § 10 HANDLER: TOOLS   → handleDecompose, handleMindMap, handleSummary       ║
+// ║  § 11 RENDER           → JSX del componente                                  ║
+// ╚══════════════════════════════════════════════════════════════════════════════╝
+
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Upload, FileText, Loader2, Sparkles, BookOpen, Zap, Brain, Map, Lock, Camera, X, ScrollText, BookMarked, Youtube } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -28,6 +46,8 @@ import {
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
+
+// ═══ § 2 COSTANTI & TIPI ═══════════════════════════════════════════════════════
 const SUPPORTED_EXTENSIONS = [".txt", ".md", ".csv", ".pdf", ".docx", ".doc", ".json", ".xml", ".html"];
 
 const MAX_IMAGES = 5;
@@ -39,6 +59,8 @@ interface UploadedImage {
   base64: string;
 }
 
+
+// ═══ § 3 FILE HELPERS ══════════════════════════════════════════════════════════
 async function extractTextFromPdf(arrayBuffer: ArrayBuffer): Promise<string> {
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   const pageTexts: string[] = [];
@@ -100,6 +122,8 @@ function readFileAsDataURL(file: File): Promise<string> {
   });
 }
 
+
+// ═══ § 4 PROPS ═════════════════════════════════════════════════════════════════
 interface DocumentUploadProps {
   onQuizGenerated: (quizId: string) => void;
   onFlashcardsGenerated: (deckId: string) => void;
@@ -112,6 +136,8 @@ interface DocumentUploadProps {
   onSummaryGenerated?: (content: string, format: string, title: string) => void;
 }
 
+
+// ═══ § 5 COMPONENT STATE ═══════════════════════════════════════════════════════
 const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess, hasGamified, onTextContentSet, onDecompose, onMindMap, onInsufficientCredits, onSummaryGenerated }: DocumentUploadProps) => {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -145,6 +171,8 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
 
   const formatTime = useCallback((s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`, []);
 
+
+  // ─── § 6 HANDLER: FILE ──────────────────────────────────────────────────────
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -184,6 +212,8 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
     }
   };
 
+
+  // ─── § 7 HANDLER: IMMAGINI ─────────────────────────────────────────────────
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
@@ -231,6 +261,8 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
     });
   };
 
+
+  // ─── § 8 HANDLER: YOUTUBE ──────────────────────────────────────────────────
   const handleYoutubeImport = async () => {
     if (!youtubeUrl.trim() || !user) return;
     if (!canUseYouTubeImport) {
@@ -286,6 +318,8 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
   // ──────────────────────────────────────────────────────────────────────────
   // GENERA QUIZ / FLASHCARD
   // ──────────────────────────────────────────────────────────────────────────
+
+  // ─── § 9 HANDLER: GENERA (quiz / flashcard) ───────────────────────────────
   const generate = async (type: "quiz" | "flashcards" | "quiz_gamified") => {
     if (!hasContent || !user) {
       toast({ title: "Nessun contenuto", description: "Carica un documento, incolla del testo o aggiungi delle foto.", variant: "destructive" });
@@ -317,17 +351,32 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         }
       }
 
+      // Fix 4: chiudi eventuali job "processing" precedenti dello stesso tipo
+      // prima di crearne uno nuovo. Evita spinner multipli sovrapposti se si riprova.
+      await supabase
+        .from("generation_jobs")
+        .update({ status: "cancelled", error: "Sostituito da nuova generazione", completed_at: new Date().toISOString() })
+        .eq("user_id", user.id)
+        .eq("content_type", isFlash ? "flashcards" : "quiz")
+        .in("status", ["pending", "processing"]);
+
       // Crea job per tracking
-      const { data: job } = await supabase.from("generation_jobs")
+      // Fix 6: se l'insert fallisce, lanciamo un errore esplicito invece di usare
+      // crypto.randomUUID() come fallback — un UUID non esistente nel DB causa
+      // Realtime subscription silente e spinner infinito.
+      const { data: job, error: jobError } = await supabase
+        .from("generation_jobs")
         .insert({ user_id: user.id, content_type: isFlash ? "flashcards" : "quiz", title: docTitle, document_id: documentId || null, status: "processing" })
         .select("id").single();
-      const jobId = job?.id ?? crypto.randomUUID();
+      if (jobError || !job?.id) throw new Error("Impossibile avviare il job di generazione. Riprova.");
+      const jobId = job.id;
       createdJobId = jobId;
 
       toast({ title: "🚀 Generazione avviata", description: `Spesi ${CREDIT_COSTS[creditAction]} cr. Elaborazione in corso...` });
 
-      // ── Prepara contenuto e chiama l'Edge Function ────────────────────────
-      const inputText = `[LIVELLO_DISTRAZIONE:${distractionLevel}]\n${textContent}`;
+      // Il livello distrazione viene passato come parametro separato, non nel testo.
+      // In precedenza veniva preposto come "[LIVELLO_DISTRAZIONE:X]\n" al testo —
+      // causava domande sull'artefatto stesso se la strip nel backend non era deployata.
       let result;
 
       if (hasImages && !textContent.trim()) {
@@ -343,21 +392,26 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         result = await generateQuizOrFlashcardsFromImages(dataUrls, type, jobId, documentId, docTitle);
       } else {
         // Testo (estratto da file o incollato) → Edge Function
-        const content = textContent.trim() ? inputText : "";
+        const content = textContent.trim();
         if (!content) throw new Error("Nessun testo da elaborare");
         result = await generateQuizOrFlashcards(type, content, jobId, documentId, docTitle);
       }
 
       // ── Gestisci risultato ────────────────────────────────────────────────
       if (result.mode === "sync_edge") {
-        // Edge Function ha già salvato — usa l'ID direttamente
         const resultId = result.quizId || result.deckId;
         if (resultId) {
-          if (job?.id) await supabase.from("generation_jobs").update({ status: "completed", result_id: resultId, completed_at: new Date().toISOString(), error: null }).eq("id", job.id);
+          // Percorso normale: Edge Function ha salvato, aggiorna job e naviga
+          if (job.id) await supabase.from("generation_jobs").update({ status: "completed", result_id: resultId, completed_at: new Date().toISOString(), error: null }).eq("id", job.id);
           if (isFlash) onFlashcardsGenerated(resultId);
           else         onQuizGenerated(resultId);
+          toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
+        } else {
+          // Fix 1: sync_edge senza resultId = generazione fallita silenziosamente.
+          // Senza questo else, il job restava "processing" in eterno e il GenerationNotifier
+          // mostrava lo spinner per sempre anche dopo che il toast "completata" era già uscito.
+          throw new Error("Nessuna domanda generata. Il documento potrebbe essere troppo corto o in un formato non supportato. Riprova.");
         }
-        toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
         setGenerating(null);
 
       } else if (result.mode === "async_edge") {
@@ -415,6 +469,8 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
   // ──────────────────────────────────────────────────────────────────────────
   // SCOMPONI IN MICRO-TASK
   // ──────────────────────────────────────────────────────────────────────────
+
+  // ─── § 10 HANDLER: TOOLS (decompose, mindmap, summary) ────────────────────
   const handleDecompose = async () => {
     if (!textContent.trim() || !user) {
       toast({ title: "Nessun contenuto", description: "Carica un documento o incolla del testo.", variant: "destructive" });

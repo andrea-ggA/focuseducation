@@ -63,7 +63,9 @@ const GenerationNotifier = () => {
   useEffect(() => {
     if (!user) return;
 
-    const STALE_MINUTES = 10; // job più vecchi di 10 min sono considerati zombie
+    // Allineato con il safety timeout di DocumentUpload (3 min).
+    // Un job più vecchio di 3 minuti senza completarsi è sicuramente hung.
+    const STALE_MINUTES = 3;
 
     // Carica job attivi al mount — pulisce automaticamente gli zombie
     supabase

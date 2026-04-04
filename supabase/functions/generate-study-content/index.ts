@@ -141,17 +141,29 @@ async function parallelLimit<T>(tasks: (() => Promise<T>)[], limit: number): Pro
 // ═══════════════════════════════════════════════════════════════════════════════
 // AI CALL — retry con backoff esponenziale
 // ═══════════════════════════════════════════════════════════════════════════════
+// FIX 4: modello stabile e veloce. gemini-2.5-flash è sperimentale e lento.
+const FAST_MODEL = "gemini-1.5-flash";
+
 async function callAI(
-  apiKey: string, messages: any[], model = "gemini-2.5-flash",
+  apiKey: string, messages: any[], model = FAST_MODEL,
   retries = 3, maxTokens = 16000,
 ): Promise<any> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages, max_tokens: maxTokens }),
-      });
+      // FIX 6: AbortController da 45s — impedisce che callAI blocchi per sempre
+      const ctrl  = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 45_000);
+      let res: Response;
+      try {
+        res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model, messages, max_tokens: maxTokens }),
+          signal: ctrl.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
       if (!res.ok) {
         const t = await res.text();
         console.error(`AI error (attempt ${attempt + 1}):`, res.status, t.substring(0, 150));
@@ -166,9 +178,10 @@ async function callAI(
       return await res.json();
     } catch (e: any) {
       if (e.status === 402 || e.status === 429) throw e;
-      console.error(`AI network error (attempt ${attempt + 1}):`, e.message || e);
-      if (attempt < retries) { await sleep(2000 * (attempt + 1)); continue; }
-      throw e;
+      const isTimeout = e.name === "AbortError" || e.message?.includes("aborted");
+      console.error(`AI ${isTimeout ? "timeout" : "network"} error (attempt ${attempt + 1}/${retries + 1}):`, e.message || e);
+      if (attempt < retries) { await sleep(isTimeout ? 1000 : 2000 * (attempt + 1)); continue; }
+      throw isTimeout ? new Error("Timeout risposta AI (45s). Riprova.") : e;
     }
   }
 }
@@ -337,6 +350,7 @@ async function extractTopicOutline(apiKey: string, text: string, language: strin
   try {
     const data = await callAI(apiKey, [
       { role: "system", content: `You are an expert academic content analyst. ${langNote}` },
+
       { role: "user", content: `Analyze this academic text and identify the 5 to 15 MAIN topics/chapters.
 
 RULES:
@@ -350,7 +364,7 @@ Return ONLY a JSON array. Example: ["Cell Biology", "DNA Replication"]
 ${sample}
 --- END ---
 JSON array only.` },
-    ], "gemini-2.5-flash", 2, 1500);
+    ], FAST_MODEL, 2, 1500);
 
     const txt = data.choices?.[0]?.message?.content || "";
     const cl  = txt.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
@@ -436,8 +450,9 @@ serve(async (req) => {
     if (authError || !authUser) throw new Error("Unauthorized");
     const user = { id: authUser.id };
 
+    // FIX 8: rate limit aumentato a 10/min (era 5 — troppo basso per retry automatici)
     const { data: allowed } = await supabase.rpc("check_and_increment_rate_limit", {
-      _user_id: user.id, _max_per_min: 5,
+      _user_id: user.id, _max_per_min: 10,
     });
     if (allowed === false) {
       return new Response(JSON.stringify({ error: "Troppe richieste. Attendi un minuto." }), {
@@ -445,7 +460,11 @@ serve(async (req) => {
       });
     }
 
-    const { content, type, documentId, title, jobId, images, asyncMode, internalRun } = await req.json();
+    const { content: rawContent, type, documentId, title, jobId, images, asyncMode, internalRun } = await req.json();
+    // FIX 3: rimuovi il prefisso [LIVELLO_DISTRAZIONE:X] aggiunto dal frontend prima della pulizia
+    const content = typeof rawContent === "string"
+      ? rawContent.replace(/^\[LIVELLO_DISTRAZIONE:\d+\]\s*/m, "")
+      : rawContent;
     const hasImages = Array.isArray(images) && images.length > 0;
     console.log(`[gen] type=${type} len=${content?.length||0} imgs=${hasImages?images.length:0} job=${jobId||"none"}`);
 
@@ -458,7 +477,11 @@ serve(async (req) => {
         status: "processing", progress_message: "Avvio in background…",
       });
 
-      (globalThis as any).EdgeRuntime?.waitUntil((async () => {
+      // FIX 2: EdgeRuntime?.waitUntil fallisce silenziosamente se EdgeRuntime non
+      // è disponibile (runtime non Supabase). Usiamo fetch diretta senza await:
+      // il job viene avviato in background e risponde subito con 202.
+      // Nota: usiamo un try senza await — se il lancio fallisce, aggiorniamo il job.
+      (async () => {
         try {
           const r = await fetch(`${supabaseUrl}/functions/v1/generate-study-content`, {
             method: "POST",
@@ -466,14 +489,14 @@ serve(async (req) => {
             body: JSON.stringify({ content, type, documentId, title, jobId, images, asyncMode: false, internalRun: true }),
           });
           if (!r.ok) await updateJob(supabase, jobId, {
-            status: "error", error: `Errore avvio (${r.status})`, completed_at: new Date().toISOString(),
+            status: "error", error: `Errore avvio background (${r.status})`, completed_at: new Date().toISOString(),
           });
         } catch (err: any) {
           await updateJob(supabase, jobId, {
-            status: "error", error: err?.message || "Errore", completed_at: new Date().toISOString(),
+            status: "error", error: err?.message || "Errore avvio background", completed_at: new Date().toISOString(),
           });
         }
-      })());
+      })();
 
       return new Response(JSON.stringify({ success: true, accepted: true, jobId }), {
         status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -529,7 +552,7 @@ ${lang} ESATTAMENTE ${N} flashcard. SOLO JSON.`;
       const aiData      = await callAI(GEMINI_API_KEY, [
         { role:"system", content:`Professional academic educator. ${lang}` },
         { role:"user",   content:parts },
-      ], "gemini-2.5-flash", 3, 16000);
+      ], FAST_MODEL, 3, 16000);
 
       const parsed = extractJsonFromText(aiData.choices?.[0]?.message?.content || "");
       const genTitle = parsed.title || title || "Foto appunti";
@@ -599,7 +622,7 @@ ${lang} ESATTAMENTE ${N} flashcard. SOLO JSON.`;
         ? Promise.resolve(heuristicLang)
         : callAI(GEMINI_API_KEY,
             [{ role:"user", content:`Detect language. ONE word only (italiano/english/español/français/deutsch). Text: "${cleanedContent.substring(0,400)}"` }],
-            "gemini-2.5-flash", 2, 15,
+            FAST_MODEL, 2, 15,
           ).then(d => {
             const det = d.choices?.[0]?.message?.content?.trim().toLowerCase() || "";
             return det && det.length < 25 ? det : "italiano";
@@ -620,11 +643,14 @@ ${lang} ESATTAMENTE ${N} flashcard. SOLO JSON.`;
     // ── STEP 1: Chunking a confini di frase ───────────────────────────────────
     // 28000 chars/chunk (+55% vs 4500 parole prima), overlap 800 chars
     // MAX_CHUNKS 20 (era 12), CONCURRENCY 6 (era 3)
-    const MAX_CHARS    = 28_000;
-    const OVERLAP      = 800;
-    const MAX_CHUNKS   = 20;
-    const CONCURRENCY  = 6;
-    const ITEMS_PER_CHUNK = 30; // era 25 max
+    // FIX 4: ridotto MAX_CHUNKS (20→8) e ITEMS_PER_CHUNK (30→15).
+    // Con gemini-2.5-flash, 20 chunk × ~20s = 400s → timeout garantito.
+    // Con gemini-1.5-flash (3-5s/chunk) e 8 chunk max → ~40s totali, dentro il limite.
+    const MAX_CHARS       = 28_000;
+    const OVERLAP         = 800;
+    const MAX_CHUNKS      = 8;
+    const CONCURRENCY     = 4;
+    const ITEMS_PER_CHUNK = 15;
 
     const allChunks     = chunkBySentences(cleanedContent, MAX_CHARS, OVERLAP);
     const nChunks       = Math.min(allChunks.length, MAX_CHUNKS);
@@ -690,7 +716,7 @@ EXACTLY ${ITEMS_PER_CHUNK} flashcards. ONLY valid JSON.`;
       try {
         const aiData = await callAI(GEMINI_API_KEY,
           [{ role:"system", content:systemMsg }, { role:"user", content:prompt }],
-          "gemini-2.5-flash", 3, 16000);
+          FAST_MODEL, 3, 16000);
 
         const txt = aiData.choices?.[0]?.message?.content || "";
         if (!txt) { console.warn(`Chunk ${chunkNum}: empty`); return { chunkNum, title:null, questions:[], cards:[] }; }

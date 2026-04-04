@@ -24,8 +24,10 @@ const BACKEND_URL = (() => {
     : v;
 })();
 
-// Soglia: sopra questa dimensione usiamo asyncMode per quiz/flashcard
-export const ASYNC_THRESHOLD = 30_000;
+// FIX 5: soglia async alzata 30k→60k.
+// La maggior parte dei documenti universitari (PDF capitolo) è 40-80k chars.
+// Sotto 60k usa il path SYNC (più affidabile); sopra usa async + Realtime.
+export const ASYNC_THRESHOLD = 60_000;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export async function getAuthToken(): Promise<string> {

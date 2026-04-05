@@ -415,39 +415,28 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         setGenerating(null);
 
       } else if (result.mode === "async_edge") {
-        // Documento grande — elaborazione in background, ascolto via Realtime
-        toast({ title: "⏳ Documento grande in elaborazione", description: "La generazione continua in background. Ti avviseremo al termine." });
+        // Con ASYNC_THRESHOLD=500k questo percorso non dovrebbe mai essere raggiunto.
+        // Se succede (documento enorme), rilascia subito il loader locale e lascia
+        // che il GenerationNotifier globale gestisca il tracking via Realtime.
+        // Due spinner separati sullo stesso job causavano loader duplicati.
+        toast({ title: "⏳ Generazione in background", description: "La generazione continua in background. Riceverai una notifica al termine." });
+        setGenerating(null); // rilascia subito il loader locale — GenerationNotifier gestisce il resto
 
-        const ch = supabase.channel(`job_${result.jobId}`)
-          .on("postgres_changes", { event: "UPDATE", schema: "public", table: "generation_jobs", filter: `id=eq.${result.jobId}` }, async (payload) => {
-            const upd = payload.new as any;
-            if (upd.status === "completed" && upd.result_id) {
-              supabase.removeChannel(ch);
-              if (isFlash) onFlashcardsGenerated(upd.result_id);
-              else         onQuizGenerated(upd.result_id);
-              toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
-              setGenerating(null);
-            } else if (upd.status === "error") {
-              supabase.removeChannel(ch);
-              toast({ title: "Generazione fallita", description: upd.error || "Errore. Riprova.", variant: "destructive" });
-              await refreshCredits();
-              setGenerating(null);
-            }
-          })
-          .subscribe();
-
-        // FIX 8: safety timeout ridotto 10min→3min. Con gemini-1.5-flash
-        // una generazione non dovrebbe mai superare 2min. Se supera 3min è hung.
+        // Safety: se dopo 3 minuti il job è ancora processing, lo chiude come errore nel DB
+        // così il GenerationNotifier smette di mostrarlo invece di restare zombie.
         setTimeout(async () => {
-          supabase.removeChannel(ch);
           const { data: jc } = await supabase.from("generation_jobs").select("status, result_id").eq("id", result.jobId).single();
-          if (jc?.status === "completed" && jc?.result_id) {
+          if (!jc || jc.status === "processing" || jc.status === "pending") {
+            await supabase.from("generation_jobs").update({
+              status: "error",
+              error: "Timeout: generazione interrotta dopo 3 minuti.",
+              completed_at: new Date().toISOString(),
+            }).eq("id", result.jobId);
+            await refreshCredits();
+          } else if (jc.status === "completed" && jc.result_id) {
             if (isFlash) onFlashcardsGenerated(jc.result_id);
             else         onQuizGenerated(jc.result_id);
-          } else {
-            toast({ title: "Timeout generazione", description: "Controlla la libreria tra qualche minuto.", variant: "destructive" });
           }
-          setGenerating(null);
         }, 3 * 60 * 1000);
       }
 

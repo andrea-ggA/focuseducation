@@ -37,9 +37,10 @@ const corsHeaders = {
 // Per cambiare modello modifica SOLO FAST_MODEL.
 // Per cambiare velocità/quantità: MAX_CHUNKS, CONCURRENCY, ITEMS_PER_CHUNK.
 // ═══════════════════════════════════════════════════════════════════════════════
-// Modello primario. Se fallisce con 429/5xx, callAI ritenta con FALLBACK_MODEL.
-const FAST_MODEL      = "gemini-1.5-flash";
-const FALLBACK_MODEL  = "gemini-1.5-pro"; // modello più capace, usato se flash esaurisce tutti i retry
+// Modelli supportati dall'API Gemini corrente.
+// La serie 1.5 è stata rimossa e causava 404 -> risposta non-2xx della function.
+const FAST_MODEL: string     = "gemini-2.5-flash";
+const FALLBACK_MODEL: string = "gemini-2.0-flash";
 const CHUNK_MAX_CHARS = 28_000;
 const CHUNK_OVERLAP   = 800;
 const MAX_CHUNKS      = 8;   // 20 causava timeout con gemini-2.5-flash
@@ -150,7 +151,7 @@ async function parallelLimit<T>(tasks: (() => Promise<T>)[], limit: number): Pro
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 async function callAI(
-  apiKey: string, messages: any[], model = FAST_MODEL,
+  apiKey: string, messages: any[], model: string = FAST_MODEL,
   retries = 3, maxTokens = 16000,
 ): Promise<any> {
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -184,7 +185,7 @@ async function callAI(
       console.error(`AI ${isTimeout ? "timeout" : "network"} error (attempt ${attempt + 1}/${retries + 1}):`, e.message || e);
       if (attempt < retries) { await sleep(isTimeout ? 1000 : 2000 * (attempt + 1)); continue; }
       // Ultimo tentativo: prova il modello fallback se diverso da quello principale
-      if (model === FAST_MODEL && model !== FALLBACK_MODEL) {
+      if (model === FAST_MODEL && FAST_MODEL !== FALLBACK_MODEL) {
         console.warn(`[callAI] switching to fallback model: ${FALLBACK_MODEL}`);
         return callAI(apiKey, messages, FALLBACK_MODEL, 1, maxTokens);
       }
@@ -193,10 +194,12 @@ async function callAI(
   }
 }
 
+type JobUpdate = Record<string, unknown>;
+
 async function updateJob(
-  supabase: ReturnType<typeof createClient>,
+  supabase: any,
   jobId: string | undefined,
-  updates: Record<string, unknown>,
+  updates: JobUpdate,
 ) {
   if (!jobId) return;
   const { error } = await supabase.from("generation_jobs").update(updates).eq("id", jobId);

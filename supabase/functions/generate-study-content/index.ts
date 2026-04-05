@@ -37,7 +37,9 @@ const corsHeaders = {
 // Per cambiare modello modifica SOLO FAST_MODEL.
 // Per cambiare velocità/quantità: MAX_CHUNKS, CONCURRENCY, ITEMS_PER_CHUNK.
 // ═══════════════════════════════════════════════════════════════════════════════
-const FAST_MODEL      = "gemini-1.5-flash"; // stabile, 3-5x più veloce di 2.5-flash
+// Modello primario. Se fallisce con 429/5xx, callAI ritenta con FALLBACK_MODEL.
+const FAST_MODEL      = "gemini-1.5-flash";
+const FALLBACK_MODEL  = "gemini-1.5-pro"; // modello più capace, usato se flash esaurisce tutti i retry
 const CHUNK_MAX_CHARS = 28_000;
 const CHUNK_OVERLAP   = 800;
 const MAX_CHUNKS      = 8;   // 20 causava timeout con gemini-2.5-flash
@@ -181,13 +183,18 @@ async function callAI(
       const isTimeout = e.name === "AbortError" || e.message?.includes("aborted");
       console.error(`AI ${isTimeout ? "timeout" : "network"} error (attempt ${attempt + 1}/${retries + 1}):`, e.message || e);
       if (attempt < retries) { await sleep(isTimeout ? 1000 : 2000 * (attempt + 1)); continue; }
+      // Ultimo tentativo: prova il modello fallback se diverso da quello principale
+      if (model === FAST_MODEL && model !== FALLBACK_MODEL) {
+        console.warn(`[callAI] switching to fallback model: ${FALLBACK_MODEL}`);
+        return callAI(apiKey, messages, FALLBACK_MODEL, 1, maxTokens);
+      }
       throw isTimeout ? new Error("Timeout risposta AI (45s). Riprova.") : e;
     }
   }
 }
 
 async function updateJob(
-  supabase: any,
+  supabase: ReturnType<typeof createClient>,
   jobId: string | undefined,
   updates: Record<string, unknown>,
 ) {
@@ -436,31 +443,10 @@ serve(async (req) => {
     if (!content && !hasImages) throw new Error("Missing content or images");
     if (!type) throw new Error("Missing type");
 
-    // ── § 12 ASYNC MODE ────────────────────────────────────────────────────────
-    // Risponde 202 subito e lancia il job in background via IIFE non-awaited.
-    // EdgeRuntime?.waitUntil rimosso: falliva silenziosamente su runtime non-Supabase.
-    if (asyncMode && !internalRun) {
-      await updateJob(supabase, jobId, { status: "processing", progress_message: "Avvio in background…" });
-      (async () => {
-        try {
-          const r = await fetch(`${supabaseUrl}/functions/v1/generate-study-content`, {
-            method:  "POST",
-            headers: { "Content-Type": "application/json", Authorization: authHeader, apikey: Deno.env.get("SUPABASE_ANON_KEY")! },
-            body:    JSON.stringify({ content, type, documentId, title, jobId, images, asyncMode: false, internalRun: true }),
-          });
-          if (!r.ok) await updateJob(supabase, jobId, {
-            status: "error", error: `Errore avvio background (${r.status})`, completed_at: new Date().toISOString(),
-          });
-        } catch (err: any) {
-          await updateJob(supabase, jobId, {
-            status: "error", error: err?.message || "Errore avvio background", completed_at: new Date().toISOString(),
-          });
-        }
-      })();
-      return new Response(JSON.stringify({ success: true, accepted: true, jobId }), {
-        status: 202, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    // ── § 12 ASYNC MODE — RIMOSSO ─────────────────────────────────────────────
+    // Il self-fetch fire-and-forget causava 504 sistematici e job zombie.
+    // Con gemini-1.5-flash e MAX_CHUNKS=8 tutto completa in 30-60s (sync).
+    // asyncMode e internalRun vengono ignorati: tutto elaborato inline.
 
     if (content && typeof content !== "string") throw new Error("Content must be a string");
     const cleanedContent = content ? removePageArtifacts(cleanText(content)) : "";
@@ -593,8 +579,10 @@ serve(async (req) => {
         if (!isQ) { const cards = parsed.cards || parsed.questions || []; console.log(`Chunk ${chunkNum}/${nChunks}: +${cards.length} cards`); return { chunkNum, title:chunkTitle, questions:[], cards }; }
         else       { const qs   = parsed.questions || [];                  console.log(`Chunk ${chunkNum}/${nChunks}: +${qs.length} questions`); return { chunkNum, title:chunkTitle, questions:qs, cards:[] }; }
       } catch (err: any) {
-        console.error(`Chunk ${chunkNum} failed:`, err.message || err);
-        return { chunkNum, title:null, questions:[], cards:[] };
+        const msg = err.message || String(err);
+        console.error(`Chunk ${chunkNum} failed:`, msg);
+        // Salva il messaggio di errore reale per poterlo surfacciare se TUTTI i chunk falliscono
+        return { chunkNum, title:null, questions:[], cards:[], error: msg };
       }
     });
 
@@ -619,13 +607,15 @@ serve(async (req) => {
     const results      = await parallelLimit(wrappedTasks, CONCURRENCY);
     if (progressInterval) clearInterval(progressInterval);
 
+    const chunkErrors: string[] = [];
     for (const r of results) {
       if (r.title && generatedTitle === (title||"Studio")) generatedTitle = r.title;
       allQuestions.push(...r.questions);
       allCards.push(...r.cards);
+      if ((r as any).error) chunkErrors.push(`chunk ${r.chunkNum}: ${(r as any).error}`);
     }
     const elapsed = Math.round((Date.now() - startTime) / 1000);
-    console.log(`Done: ${elapsed}s · ${allQuestions.length} questions · ${allCards.length} cards`);
+    console.log(`Done: ${elapsed}s · ${allQuestions.length} questions · ${allCards.length} cards · ${chunkErrors.length} errors`);
 
     // Step 2: dedup + consolidazione topic
     const dedupQ = deduplicateItems(allQuestions, "question");
@@ -638,7 +628,10 @@ serve(async (req) => {
     // ── § 15 SAVE TO DB ────────────────────────────────────────────────────────
     let resultId = "", totalItems = 0;
     if (type !== "flashcards") {
-      if (!finalQ.length) throw new Error("Nessuna domanda generata. Riprova.");
+      if (!finalQ.length) {
+        const detail = chunkErrors.length > 0 ? ` Dettaglio: ${chunkErrors[0]}` : "";
+        throw new Error(`Nessuna domanda generata.${detail} Riprova.`);
+      }
       const topics = [...new Set(finalQ.map((q:any)=>q.topic).filter(Boolean))];
       const { data:quiz, error:qErr } = await supabase.from("quizzes").insert({
         user_id:user.id, document_id:documentId||null, title:generatedTitle,
@@ -663,7 +656,10 @@ serve(async (req) => {
       resultId=quiz.id; totalItems=balanced.length;
       console.log(`Quiz: ${quiz.id} · ${balanced.length} questions · ${topics.length} topics`);
     } else {
-      if (!finalC.length) throw new Error("Nessuna flashcard generata. Riprova.");
+      if (!finalC.length) {
+        const detail = chunkErrors.length > 0 ? ` Dettaglio: ${chunkErrors[0]}` : "";
+        throw new Error(`Nessuna flashcard generata.${detail} Riprova.`);
+      }
       const topics = [...new Set(finalC.map((c:any)=>c.topic).filter(Boolean))];
       const { data:deck, error:dErr } = await supabase.from("flashcard_decks").insert({
         user_id:user.id, document_id:documentId||null, title:generatedTitle,

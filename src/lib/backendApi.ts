@@ -1,35 +1,54 @@
 /**
- * backendApi.ts v3 — Edge Functions first, Cloud Run solo per AI Tutor / voice / youtube
+ * backendApi.ts
  *
- * ARCHITETTURA GENERAZIONE:
- *  - Quiz/Flashcard:
- *      Content < 80k  → Edge Function sync (aspetta risposta, usa quiz_id direttamente)
- *      Content >= 80k → Edge Function async (asyncMode:true) + Realtime subscription
- *  - Sommari/Schema/AppuntiSmart → Edge Function sync (generate-summary)
- *  - Mappe → Edge Function sync (generate-mindmap)
- *  - Decomposizione → Edge Function sync (decompose-tasks)
- *  - AI Tutor / Voice / YouTube → Cloud Run con fallback Edge Function
- *
- * NESSUN double-save: quando l'Edge Function salva il quiz/deck, usa l'ID direttamente.
+ * SEZIONI:
+ * § 1  CONFIG & TIPI     → BACKEND_URL, ASYNC_THRESHOLD, GenerationResult
+ * § 2  AUTH              → getAuthToken, helper url/key
+ * § 3  FETCH HELPERS     → fetchWithTimeout, safeJson
+ * § 4  AI TUTOR          → streamTutorChat (SSE streaming)
+ * § 5  TRASCRIZIONE AUDIO → transcribeAudio
+ * § 6  YOUTUBE           → fetchYoutubeTranscript
+ * § 7  QUIZ / FLASHCARD  → generateQuizOrFlashcards (sync/async)
+ * § 8  IMMAGINI          → generateQuizOrFlashcardsFromImages
+ * § 9  SOMMARI           → generateSummary
+ * § 10 MINDMAP           → generateMindmap
+ * § 11 MICRO-TASK        → generateMicroTasks
+ * § 12 SAVE HELPERS      → saveQuizResult, saveFlashcardResult,
+ *                           saveSummaryResult, saveMindmapResult,
+ *                           saveMicroTaskResult
+ * § 13 LEGACY ALIASES    → generateFromText (retrocompatibilità)
  */
 
 import { supabase } from "@/integrations/supabase/client";
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 1 CONFIG & TIPI
+// BACKEND_URL: Cloud Run. ASYNC_THRESHOLD: sopra questa soglia usa asyncMode.
+// ═══════════════════════════════════════════════════════════════════════════════
 const BACKEND_URL = (() => {
   const v = import.meta.env.VITE_BACKEND_URL as string | undefined;
   if (!v) return "https://focuseducation-backend-fixed-87505598703.europe-west1.run.app";
-  // normalize legacy URL
   return v.includes("focuseducation-backend-87505598703")
     ? "https://focuseducation-backend-fixed-87505598703.europe-west1.run.app"
     : v;
 })();
 
-// FIX 5: soglia async alzata 30k→60k.
-// La maggior parte dei documenti universitari (PDF capitolo) è 40-80k chars.
-// Sotto 60k usa il path SYNC (più affidabile); sopra usa async + Realtime.
-export const ASYNC_THRESHOLD = 60_000;
+// Soglia async portata a 500k: nella pratica TUTTO va in sync.
+// Il path async (self-fetch fire-and-forget) causava 504 e job zombie.
+// L'Edge Function sync regge documenti fino a ~500k chars con gemini-1.5-flash
+// e MAX_CHUNKS=8 (30-60s totali, dentro il limite Supabase di 150s/400s).
+// ASYNC_THRESHOLD impostato al massimo per disabilitare asyncMode completamente.
+// Il self-fetch fire-and-forget causava 504 sistematici — job bloccati su "processing".
+// Con MAX_CHUNKS=8 e gemini-1.5-flash tutto finisce in ~15s (dentro il timeout Supabase).
+export const ASYNC_THRESHOLD = Number.MAX_SAFE_INTEGER;
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
+export type GenerationResult =
+  | { mode: "sync_edge";  quizId?: string; deckId?: string; summaryId?: string; data?: any }
+  | { mode: "async_edge"; jobId: string };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 2 AUTH
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function getAuthToken(): Promise<string> {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.access_token) throw new Error("Sessione scaduta. Effettua il login.");
@@ -39,6 +58,11 @@ export async function getAuthToken(): Promise<string> {
 function supabaseUrl() { return (import.meta.env.VITE_SUPABASE_URL as string) ?? ""; }
 function anonKey()     { return (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string) ?? ""; }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 3 FETCH HELPERS
+// fetchWithTimeout: aggiunge AbortController con timeout ms.
+// safeJson: legge il body come testo e fa JSON.parse con errore leggibile.
+// ═══════════════════════════════════════════════════════════════════════════════
 async function fetchWithTimeout(url: string, opts: RequestInit, ms: number): Promise<Response> {
   const ctrl  = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
@@ -52,14 +76,10 @@ async function safeJson(res: Response): Promise<any> {
   catch { throw new Error(`Errore del server (${res.status})`); }
 }
 
-// ── Tipo risultato ─────────────────────────────────────────────────────────────
-export type GenerationResult =
-  | { mode: "sync_edge";  quizId?: string; deckId?: string; summaryId?: string; data?: any }
-  | { mode: "async_edge"; jobId: string };
-
-// ══════════════════════════════════════════════════════════════════════════════
-// AI TUTOR — streaming SSE (Cloud Run → fallback Edge Function)
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 4 AI TUTOR
+// Streaming SSE. Prova Cloud Run, fallback Edge Function.
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function streamTutorChat(
   messages:        Array<{ role: string; content: string }>,
   token:           string,
@@ -69,22 +89,23 @@ export async function streamTutorChat(
   if (documentContext) body.documentContext = documentContext;
   try {
     const res = await fetchWithTimeout(`${BACKEND_URL}/ai-tutor`, {
-      method: "POST",
+      method:  "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
+      body:    JSON.stringify(body),
     }, 60_000);
     if (res.ok || res.status === 429 || res.status === 402) return res;
   } catch (e) { console.warn("[backendApi] ai-tutor fallback:", e); }
   return fetch(`${supabaseUrl()}/functions/v1/ai-tutor`, {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, apikey: anonKey() },
-    body: JSON.stringify(body),
+    body:    JSON.stringify(body),
   });
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// TRASCRIZIONE AUDIO (Cloud Run → fallback Edge Function)
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 5 TRASCRIZIONE AUDIO
+// Cloud Run → fallback Edge Function (base64).
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function transcribeAudio(audioFile: File, token: string): Promise<string> {
   try {
     const fd = new FormData();
@@ -107,17 +128,18 @@ export async function transcribeAudio(audioFile: File, token: string): Promise<s
   return data.notes as string;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// YOUTUBE TRANSCRIPT (Cloud Run → fallback Edge Function)
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 6 YOUTUBE
+// Cloud Run → fallback Edge Function.
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function fetchYoutubeTranscript(
   url: string, token: string,
 ): Promise<{ transcript: string; title: string; method: string; notice?: string }> {
   try {
     const res = await fetchWithTimeout(`${BACKEND_URL}/youtube-transcript`, {
-      method: "POST",
+      method:  "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ url }),
+      body:    JSON.stringify({ url }),
     }, 90_000);
     if (res.ok) return await safeJson(res);
   } catch (e) { console.warn("[backendApi] youtube-transcript fallback:", e); }
@@ -127,12 +149,11 @@ export async function fetchYoutubeTranscript(
   return data as { transcript: string; title: string; method: string; notice?: string };
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// QUIZ / FLASHCARD — Edge Function diretta (no Cloud Run)
-//
-// sync  (< 80k): aspetta la risposta, usa quiz_id/deck_id già salvato
-// async (≥ 80k): asyncMode:true → 202 → Realtime subscription
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 7 QUIZ / FLASHCARD
+// sync  (< ASYNC_THRESHOLD): aspetta risposta, usa quiz_id/deck_id direttamente.
+// async (≥ ASYNC_THRESHOLD): asyncMode:true → 202 → Realtime subscription.
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function generateQuizOrFlashcards(
   type:        "quiz" | "flashcards" | "quiz_gamified",
   content:     string,
@@ -140,40 +161,37 @@ export async function generateQuizOrFlashcards(
   documentId?: string,
   title?:      string,
 ): Promise<GenerationResult> {
-  const isLarge = content.length >= ASYNC_THRESHOLD;
-  const typeMap: Record<string, string> = {
-    quiz: "quiz", flashcards: "flashcards", quiz_gamified: "quiz_gamified",
-  };
+  const isLarge  = content.length >= ASYNC_THRESHOLD;
+  const typeMap: Record<string, string> = { quiz:"quiz", flashcards:"flashcards", quiz_gamified:"quiz_gamified" };
   const edgeType = typeMap[type] || type;
 
   if (!isLarge) {
-    // ── Sync: aspetta la risposta dell'Edge Function ──────────────────────
+    // Sync: aspetta la risposta dell'Edge Function
     const { data, error } = await supabase.functions.invoke("generate-study-content", {
       body: { content, type: edgeType, jobId, documentId: documentId || null, title: title || null, asyncMode: false },
     });
     if (error) throw new Error(error.message || "Generazione fallita");
     if (data?.quiz_id) return { mode: "sync_edge", quizId: data.quiz_id };
     if (data?.deck_id) return { mode: "sync_edge", deckId: data.deck_id };
-    // Fallback: se per qualche motivo non c'è l'id, controlla success
     if (data?.success) return { mode: "sync_edge" };
     throw new Error(data?.error || "Risposta inattesa dall'Edge Function");
   }
 
-  // ── Async: asyncMode:true + Realtime ─────────────────────────────────────
+  // Async: asyncMode:true + Realtime
   const { data, error } = await supabase.functions.invoke("generate-study-content", {
     body: { content, type: edgeType, jobId, documentId: documentId || null, title: title || null, asyncMode: true },
   });
   if (error) throw new Error(error.message || "Avvio generazione fallito");
   if (data?.accepted && data?.jobId) return { mode: "async_edge", jobId: data.jobId };
-  // Potrebbe aver completato in sync nonostante asyncMode (doc piccolo)
   if (data?.quiz_id) return { mode: "sync_edge", quizId: data.quiz_id };
   if (data?.deck_id) return { mode: "sync_edge", deckId: data.deck_id };
   throw new Error("Risposta inattesa dall'Edge Function (async)");
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// QUIZ / FLASHCARD DA IMMAGINI — Edge Function diretta
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 8 IMMAGINI
+// Sempre sync, sempre Edge Function diretta.
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function generateQuizOrFlashcardsFromImages(
   imageDataUrls: string[],
   type:          "quiz" | "flashcards" | "quiz_gamified",
@@ -181,9 +199,7 @@ export async function generateQuizOrFlashcardsFromImages(
   documentId?:   string,
   title?:        string,
 ): Promise<GenerationResult> {
-  const typeMap: Record<string, string> = {
-    quiz: "quiz", flashcards: "flashcards", quiz_gamified: "quiz_gamified",
-  };
+  const typeMap: Record<string, string> = { quiz:"quiz", flashcards:"flashcards", quiz_gamified:"quiz_gamified" };
   const { data, error } = await supabase.functions.invoke("generate-study-content", {
     body: {
       images:     imageDataUrls,
@@ -201,9 +217,10 @@ export async function generateQuizOrFlashcardsFromImages(
   throw new Error(data?.error || "Risposta inattesa dall'Edge Function (immagini)");
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// SOMMARI / SCHEMA / APPUNTI SMART — Edge Function sync
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 9 SOMMARI
+// Edge Function sync. Formati: summary | outline | smart_notes.
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function generateSummary(
   format:  "summary" | "outline" | "smart_notes",
   content: string,
@@ -218,9 +235,10 @@ export async function generateSummary(
   return md;
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// MAPPA CONCETTUALE — Edge Function sync
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 10 MINDMAP
+// Edge Function sync. Restituisce { nodes, edges }.
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function generateMindmap(
   content: string,
 ): Promise<{ nodes: any[]; edges: any[] }> {
@@ -231,9 +249,10 @@ export async function generateMindmap(
   return { nodes: data.nodes || [], edges: data.edges || [] };
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// SCOMPOSIZIONE MICRO-TASK — Edge Function sync
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 11 MICRO-TASK
+// Edge Function sync. Restituisce { tasks: [...] }.
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function generateMicroTasks(
   content: string,
 ): Promise<{ tasks: any[] }> {
@@ -242,12 +261,13 @@ export async function generateMicroTasks(
   return { tasks: data?.tasks || [] };
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// SAVE HELPERS — usati solo se i dati RAW arrivano dall'esterno
-// (per quiz/flashcard via Edge Function, l'ID è già salvato — non serve questi)
-// ══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 12 SAVE HELPERS
+// Usati solo se i dati RAW arrivano dall'esterno (non da Edge Function).
+// Per quiz/flashcard via Edge Function, l'ID è già salvato — non servono.
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function saveQuizResult(userId: string, data: any, documentId?: string, title?: string): Promise<string> {
-  const qd = data.quiz || data.result || data;
+  const qd        = data.quiz || data.result || data;
   const questions = qd.questions || [];
   const { data: quiz, error } = await supabase.from("quizzes").insert({
     user_id: userId, title: qd.title || title || "Quiz",
@@ -270,7 +290,7 @@ export async function saveQuizResult(userId: string, data: any, documentId?: str
 }
 
 export async function saveFlashcardResult(userId: string, data: any, documentId?: string, title?: string): Promise<string> {
-  const dd = data.result || data;
+  const dd    = data.result || data;
   const cards = dd.cards || dd.flashcards || [];
   const { data: deck, error } = await supabase.from("flashcard_decks").insert({
     user_id: userId, title: dd.title || title || "Flashcard",
@@ -291,7 +311,7 @@ export async function saveFlashcardResult(userId: string, data: any, documentId?
 }
 
 export async function saveSummaryResult(userId: string, markdown: string, format: string, title?: string): Promise<string> {
-  const labels: Record<string, string> = { summary: "Riassunto", outline: "Schema", smart_notes: "Appunti Smart" };
+  const labels: Record<string, string> = { summary:"Riassunto", outline:"Schema", smart_notes:"Appunti Smart" };
   const { data, error } = await supabase.from("generated_content").insert({
     user_id: userId, content_type: format,
     title: title || labels[format] || "Documento",
@@ -327,11 +347,13 @@ export async function saveMicroTaskResult(userId: string, tasks: any[], title?: 
   return { parentId: parent.id, totalTasks: tasks.length };
 }
 
-// ── Legacy aliases per retrocompatibilità (altri componenti) ──────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// § 13 LEGACY ALIASES
+// generateFromText: alias per retrocompatibilità con componenti vecchi.
+// Non usare per quiz/flashcard: usa generateQuizOrFlashcards().
+// ═══════════════════════════════════════════════════════════════════════════════
 export async function generateFromText(type: string, inputData: string, _token: string): Promise<any> {
-  if (type === "decompose") {
-    return generateMicroTasks(inputData);
-  }
+  if (type === "decompose") return generateMicroTasks(inputData);
   if (type === "mindmap") {
     const { nodes, edges } = await generateMindmap(inputData);
     return { success: true, nodes, edges };

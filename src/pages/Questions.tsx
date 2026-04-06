@@ -97,6 +97,7 @@ const Questions = () => {
         .from("quizzes")
         .select("id, title, topic, total_questions, quiz_type, document_id")
         .eq("user_id", user.id)
+        .gt("total_questions", 0)
         .order("created_at", { ascending: false });
 
       const { data: docs } = await supabase

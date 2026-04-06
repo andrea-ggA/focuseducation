@@ -401,15 +401,42 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
       if (result.mode === "sync_edge") {
         const resultId = result.quizId || result.deckId;
         if (resultId) {
-          // Percorso normale: Edge Function ha salvato, aggiorna job e naviga
-          if (job.id) await supabase.from("generation_jobs").update({ status: "completed", result_id: resultId, completed_at: new Date().toISOString(), error: null }).eq("id", job.id);
+          if (!isFlash) {
+            const { count, error: countError } = await supabase
+              .from("quiz_questions")
+              .select("id", { count: "exact", head: true })
+              .eq("quiz_id", resultId);
+
+            if (countError) {
+              throw new Error("Il quiz è stato creato ma non è stato possibile verificarne le domande. Riprova.");
+            }
+
+            if (!count || count <= 0) {
+              if (job.id) {
+                await supabase
+                  .from("generation_jobs")
+                  .update({
+                    status: "error",
+                    error: "Quiz creato senza domande. Riprova.",
+                    completed_at: new Date().toISOString(),
+                  })
+                  .eq("id", job.id);
+              }
+              await supabase.from("quizzes").delete().eq("id", resultId);
+              throw new Error("Il quiz generato era vuoto: l'ho bloccato automaticamente. Riprova.");
+            }
+          }
+
+          if (job.id) {
+            await supabase
+              .from("generation_jobs")
+              .update({ status: "completed", result_id: resultId, completed_at: new Date().toISOString(), error: null })
+              .eq("id", job.id);
+          }
           if (isFlash) onFlashcardsGenerated(resultId);
           else         onQuizGenerated(resultId);
           toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
         } else {
-          // Fix 1: sync_edge senza resultId = generazione fallita silenziosamente.
-          // Senza questo else, il job restava "processing" in eterno e il GenerationNotifier
-          // mostrava lo spinner per sempre anche dopo che il toast "completata" era già uscito.
           throw new Error("Nessuna domanda generata. Il documento potrebbe essere troppo corto o in un formato non supportato. Riprova.");
         }
         setGenerating(null);

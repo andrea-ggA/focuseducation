@@ -76,7 +76,7 @@ const StudyHistory = ({ onPlayQuiz, onViewDeck, refreshKey }: StudyHistoryProps)
     const fetchAll = async () => {
       const [dRes, qRes, fRes] = await Promise.all([
         supabase.from("documents").select("id, title, created_at, file_type").eq("user_id", user.id).order("created_at", { ascending: false }),
-        supabase.from("quizzes").select("id, title, topic, quiz_type, total_questions, created_at, document_id, share_token").eq("user_id", user.id).order("created_at", { ascending: false }),
+        supabase.from("quizzes").select("id, title, topic, quiz_type, total_questions, created_at, document_id, share_token").eq("user_id", user.id).gt("total_questions", 0).order("created_at", { ascending: false }),
         supabase.from("flashcard_decks").select("id, title, topic, card_count, created_at, document_id, share_token").eq("user_id", user.id).order("created_at", { ascending: false }),
       ]);
       if (dRes.data) setDocuments(dRes.data);

@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { forwardRef, useRef, useState } from "react";
 import { Upload, Loader2, FileText, Send, Trash2, FileAudio, Coins } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getAuthToken, transcribeAudio } from "@/lib/backendApi";
@@ -13,7 +13,7 @@ interface VoiceNotesProps {
 
 const ACCEPTED_AUDIO_FORMATS = ".mp3,.wav,.ogg,.m4a,.aac,.flac,.wma,.webm,.opus,.mp4";
 
-const VoiceNotes = ({ onNotesGenerated }: VoiceNotesProps) => {
+const VoiceNotes = forwardRef<HTMLDivElement, VoiceNotesProps>(({ onNotesGenerated }, ref) => {
   const { user } = useAuth();
   const { toast } = useToast();
   const { totalCredits, spendCredits } = useCredits();
@@ -53,7 +53,6 @@ const VoiceNotes = ({ onNotesGenerated }: VoiceNotesProps) => {
     setTranscribing(true);
 
     try {
-      // Spend credits first
       const spent = await spendCredits("voice_notes");
       if (!spent) {
         toast({ title: "Crediti insufficienti", variant: "destructive" });
@@ -105,7 +104,7 @@ const VoiceNotes = ({ onNotesGenerated }: VoiceNotesProps) => {
   };
 
   return (
-    <div className="space-y-4">
+    <div ref={ref} className="space-y-4">
       <div className="flex items-center gap-2 mb-2">
         <FileAudio className="h-5 w-5 text-accent" />
         <h3 className="text-sm font-semibold text-card-foreground">Appunti da audio</h3>
@@ -127,7 +126,6 @@ const VoiceNotes = ({ onNotesGenerated }: VoiceNotesProps) => {
         className="hidden"
       />
 
-      {/* Upload controls */}
       <div className="flex gap-3">
         <Button
           onClick={() => fileInputRef.current?.click()}
@@ -165,14 +163,12 @@ const VoiceNotes = ({ onNotesGenerated }: VoiceNotesProps) => {
         )}
       </div>
 
-      {/* Credit warning */}
       {audioFile && !canAfford && (
         <p className="text-xs text-destructive flex items-center gap-1">
           <Coins className="h-3 w-3" /> Crediti insufficienti ({totalCredits}/{cost} necessari)
         </p>
       )}
 
-      {/* File info */}
       {audioFile && !transcript && !transcribing && (
         <div className="flex items-center gap-2 p-3 bg-secondary rounded-xl text-sm text-muted-foreground">
           <FileAudio className="h-4 w-4" />
@@ -181,14 +177,12 @@ const VoiceNotes = ({ onNotesGenerated }: VoiceNotesProps) => {
         </div>
       )}
 
-      {/* Supported formats hint */}
       {!audioFile && (
         <p className="text-[10px] text-muted-foreground">
           Formati supportati: MP3, WAV, OGG, M4A, AAC, FLAC, WMA, WebM, OPUS, MP4
         </p>
       )}
 
-      {/* Transcript result */}
       {transcript && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="space-y-3">
           <div className="bg-secondary rounded-xl p-4 max-h-64 overflow-y-auto">
@@ -201,6 +195,8 @@ const VoiceNotes = ({ onNotesGenerated }: VoiceNotesProps) => {
       )}
     </div>
   );
-};
+});
+
+VoiceNotes.displayName = "VoiceNotes";
 
 export default VoiceNotes;

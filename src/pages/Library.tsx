@@ -126,7 +126,7 @@ const Library = () => {
   const fetchData = useCallback(async () => {
     if (!user) return;
     const [qRes, dRes, mRes, sRes] = await Promise.all([
-      supabase.from("quizzes").select("id, title, topic, quiz_type, total_questions, created_at, share_token").eq("user_id", user.id).order("created_at", { ascending: false }),
+      supabase.from("quizzes").select("id, title, topic, quiz_type, total_questions, created_at, share_token").eq("user_id", user.id).gt("total_questions", 0).order("created_at", { ascending: false }),
       supabase.from("flashcard_decks").select("id, title, topic, card_count, created_at, share_token").eq("user_id", user.id).order("created_at", { ascending: false }),
       supabase.from("generated_content").select("id, title, content, created_at").eq("user_id", user.id).eq("content_type", "mindmap").order("created_at", { ascending: false }),
       supabase.from("generated_content").select("id, title, content, content_type, created_at, share_token").eq("user_id", user.id).in("content_type", ["summary", "outline", "smart_notes"]).order("created_at", { ascending: false }),

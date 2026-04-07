@@ -44,7 +44,10 @@ const FALLBACK_MODEL: string = "gemini-2.5-flash-lite";
 
 // Oltre questa soglia il browser rischia di chiudere la richiesta prima che
 // il quiz finisca: in quel caso avviamo il job in background e rispondiamo subito.
-const ASYNC_MODE_THRESHOLD = 30_000;
+// Alzato 30k→100k: file universitari tipici (40-80k) restano nel path SINCRONO.
+// Con 6k chunks × concurrency 4 × ~5s = ~40s per un 42k doc — dentro il limite 150s.
+// Solo file >100k vanno in background via waitUntil (libri, tesi).
+const ASYNC_MODE_THRESHOLD = 100_000;
 
 // CHUNK_MAX_CHARS: ridotto 28k→6k. Con 28k un doc da 42k dava 2 chunk×15=30 domande.
 // Con 6k: 42k doc→8 chunk×25=200 domande | 80k→16×25=400 | 10k→2×25=50.

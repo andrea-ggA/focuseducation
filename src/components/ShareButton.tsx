@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, forwardRef } from "react";
 import { Share2, Check, Copy, Link } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
@@ -31,7 +31,7 @@ const ROUTE_MAP: Record<ShareableType, string> = {
   summary: "/riassunto/s/",
 };
 
-const ShareButton = ({ type, id, shareToken, onTokenGenerated, size = "icon" }: ShareButtonProps) => {
+const ShareButton = forwardRef<HTMLDivElement, ShareButtonProps>(({ type, id, shareToken, onTokenGenerated, size = "icon" }, ref) => {
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -100,6 +100,8 @@ const ShareButton = ({ type, id, shareToken, onTokenGenerated, size = "icon" }: 
       {copied ? <Check className="h-3.5 w-3.5" /> : <Share2 className="h-3.5 w-3.5" />}
     </Button>
   );
-};
+});
+
+ShareButton.displayName = "ShareButton";
 
 export default ShareButton;

@@ -40,7 +40,7 @@ const corsHeaders = {
 // Modelli supportati dall'API Gemini corrente.
 // La serie 1.5 è stata rimossa e causava 404 -> risposta non-2xx della function.
 const FAST_MODEL: string = "gemini-2.5-flash";
-const FALLBACK_MODEL: string = "gemini-2.0-flash";
+const FALLBACK_MODEL: string = "gemini-2.5-flash-lite";
 // CHUNK_MAX_CHARS: ridotto 28k→6k. Con 28k un doc da 42k dava 2 chunk×15=30 domande.
 // Con 6k: 42k doc→8 chunk×25=200 domande | 80k→16×25=400 | 10k→2×25=50.
 // Timing: 16 chunk × ~5s (gemini-2.5-flash, concurrency 4) = ~20s. Sicuro.

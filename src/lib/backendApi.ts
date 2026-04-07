@@ -33,14 +33,10 @@ const BACKEND_URL = (() => {
     : v;
 })();
 
-// Soglia async portata a 500k: nella pratica TUTTO va in sync.
-// Il path async (self-fetch fire-and-forget) causava 504 e job zombie.
-// L'Edge Function sync regge documenti fino a ~500k chars con gemini-1.5-flash
-// e MAX_CHUNKS=8 (30-60s totali, dentro il limite Supabase di 150s/400s).
-// ASYNC_THRESHOLD impostato al massimo per disabilitare asyncMode completamente.
-// Il self-fetch fire-and-forget causava 504 sistematici — job bloccati su "processing".
-// Con MAX_CHUNKS=8 e gemini-1.5-flash tutto finisce in ~15s (dentro il timeout Supabase).
-export const ASYNC_THRESHOLD = Number.MAX_SAFE_INTEGER;
+// Oltre ~30k caratteri la generazione quiz può richiedere diversi minuti.
+// In questi casi usiamo il job in background per evitare che il browser chiuda
+// la richiesta con "Failed to send a request to the Edge Function".
+export const ASYNC_THRESHOLD = 30_000;
 
 export type GenerationResult =
   | { mode: "sync_edge";  quizId?: string; deckId?: string; summaryId?: string; data?: any }
@@ -166,11 +162,11 @@ export async function generateQuizOrFlashcards(
   const edgeType = typeMap[type] || type;
 
   if (!isLarge) {
-    // Sync: aspetta la risposta dell'Edge Function
     const { data, error } = await supabase.functions.invoke("generate-study-content", {
       body: { content, type: edgeType, jobId, documentId: documentId || null, title: title || null, asyncMode: false },
     });
     if (error) throw new Error(error.message || "Generazione fallita");
+    if (data?.accepted && data?.jobId) return { mode: "async_edge", jobId: data.jobId };
     if (data?.quiz_id) return { mode: "sync_edge", quizId: data.quiz_id };
     if (data?.deck_id) return { mode: "sync_edge", deckId: data.deck_id };
     if (data?.success) return { mode: "sync_edge" };

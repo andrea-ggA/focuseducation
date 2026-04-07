@@ -41,6 +41,11 @@ const corsHeaders = {
 // La serie 1.5 è stata rimossa e causava 404 -> risposta non-2xx della function.
 const FAST_MODEL: string = "gemini-2.5-flash";
 const FALLBACK_MODEL: string = "gemini-2.5-flash-lite";
+
+// Oltre questa soglia il browser rischia di chiudere la richiesta prima che
+// il quiz finisca: in quel caso avviamo il job in background e rispondiamo subito.
+const ASYNC_MODE_THRESHOLD = 30_000;
+
 // CHUNK_MAX_CHARS: ridotto 28k→6k. Con 28k un doc da 42k dava 2 chunk×15=30 domande.
 // Con 6k: 42k doc→8 chunk×25=200 domande | 80k→16×25=400 | 10k→2×25=50.
 // Timing: 16 chunk × ~5s (gemini-2.5-flash, concurrency 4) = ~20s. Sicuro.
@@ -635,6 +640,62 @@ serve(async (req) => {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+
+    const canRunAsync = typeof (globalThis as any).EdgeRuntime?.waitUntil === "function";
+    const shouldRunAsync = Boolean(jobId) && !hasImages && !internalRun && canRunAsync && (asyncMode === true || cleanedLen >= ASYNC_MODE_THRESHOLD);
+
+    if (shouldRunAsync) {
+      await updateJob(supabase, jobId, {
+        status: "processing",
+        progress_message: "Avvio in background…",
+        progress_pct: 0,
+        error: null,
+      });
+
+      (globalThis as any).EdgeRuntime.waitUntil((async () => {
+        try {
+          const response = await fetch(`${supabaseUrl}/functions/v1/generate-study-content`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: authHeader,
+              apikey: Deno.env.get("SUPABASE_ANON_KEY")!,
+            },
+            body: JSON.stringify({
+              content,
+              type,
+              documentId: documentId || null,
+              title: title || null,
+              jobId,
+              images,
+              asyncMode: false,
+              internalRun: true,
+            }),
+          });
+
+          await response.text();
+
+          if (!response.ok) {
+            await updateJob(supabase, jobId, {
+              status: "error",
+              error: `Errore avvio (${response.status})`,
+              completed_at: new Date().toISOString(),
+            });
+          }
+        } catch (err: any) {
+          await updateJob(supabase, jobId, {
+            status: "error",
+            error: err?.message || "Errore in background",
+            completed_at: new Date().toISOString(),
+          });
+        }
+      })());
+
+      return new Response(JSON.stringify({ success: true, accepted: true, jobId }), {
+        status: 202,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     const GEMINI_API_KEY = Deno.env.get("GOOGLE_GEMINI_API_KEY");
     if (!GEMINI_API_KEY) throw new Error("GOOGLE_GEMINI_API_KEY not configured");

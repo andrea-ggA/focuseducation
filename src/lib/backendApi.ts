@@ -36,7 +36,9 @@ const BACKEND_URL = (() => {
 // Oltre ~30k caratteri la generazione quiz può richiedere diversi minuti.
 // In questi casi usiamo il job in background per evitare che il browser chiuda
 // la richiesta con "Failed to send a request to the Edge Function".
-export const ASYNC_THRESHOLD = 30_000;
+// Alzato 30k→100k: allineato con ASYNC_MODE_THRESHOLD nell'Edge Function.
+// File ≤100k → sync (risultato immediato). File >100k → async + GenerationNotifier.
+export const ASYNC_THRESHOLD = 100_000;
 
 export type GenerationResult =
   | { mode: "sync_edge";  quizId?: string; deckId?: string; summaryId?: string; data?: any }

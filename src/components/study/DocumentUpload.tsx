@@ -449,14 +449,14 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         toast({ title: "⏳ Generazione in background", description: "La generazione continua in background. Riceverai una notifica al termine." });
         setGenerating(null); // rilascia subito il loader locale — GenerationNotifier gestisce il resto
 
-        // Safety: se dopo 3 minuti il job è ancora processing, lo chiude come errore nel DB
+        // Safety: se dopo 8 minuti il job è ancora processing, lo chiude come errore nel DB
         // così il GenerationNotifier smette di mostrarlo invece di restare zombie.
         setTimeout(async () => {
           const { data: jc } = await supabase.from("generation_jobs").select("status, result_id").eq("id", result.jobId).single();
           if (!jc || jc.status === "processing" || jc.status === "pending") {
             await supabase.from("generation_jobs").update({
               status: "error",
-              error: "Timeout: generazione interrotta dopo 3 minuti.",
+              error: "Timeout: generazione interrotta dopo 8 minuti.",
               completed_at: new Date().toISOString(),
             }).eq("id", result.jobId);
             await refreshCredits();
@@ -464,7 +464,7 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
             if (isFlash) onFlashcardsGenerated(jc.result_id);
             else         onQuizGenerated(jc.result_id);
           }
-        }, 3 * 60 * 1000);
+        }, 8 * 60 * 1000);
       }
 
     } catch (err: any) {

@@ -7,15 +7,6 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// FIX #9: Added rate limiting (previously missing — exposed to Gemini API abuse)
-async function checkRateLimit(supabaseAdmin: any, userId: string): Promise<boolean> {
-  const { data: allowed } = await supabaseAdmin.rpc("check_and_increment_rate_limit", {
-    _user_id: userId,
-    _max_per_min: 10,
-  });
-  return allowed !== false;
-}
-
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -24,52 +15,59 @@ serve(async (req) => {
   try {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
-      return new Response(
-        JSON.stringify({ error: "Non autorizzato" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Non autorizzato" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const anonClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
       global: { headers: { Authorization: authHeader } },
     });
-    const { data: { user: authUser }, error: authError } = await anonClient.auth.getUser();
+    const {
+      data: { user: authUser },
+      error: authError,
+    } = await anonClient.auth.getUser();
     if (authError || !authUser) {
-      return new Response(
-        JSON.stringify({ error: "Non autorizzato" }),
-        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "Non autorizzato" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
     const user = { id: authUser.id };
 
-    // FIX #9: Check rate limit before processing
+    // FIX #9: Added rate limiting (previously missing — exposed to Gemini API abuse)
     const supabaseAdmin = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-    const rateOk = await checkRateLimit(supabaseAdmin, user.id);
-    if (!rateOk) {
-      return new Response(
-        JSON.stringify({ error: "Troppe richieste. Attendi un minuto." }),
-        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    const { data: allowed } = await supabaseAdmin.rpc("check_and_increment_rate_limit", {
+      _user_id: authUser.id,
+      _max_per_min: 10,
+    });
+    if (allowed === false) {
+      return new Response(JSON.stringify({ error: "Troppe richieste. Attendi un minuto." }), {
+        status: 429,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     const { audioBase64, mimeType } = await req.json();
 
     if (!audioBase64) throw new Error("Missing audio data");
 
-    // FIX #6: Validate that audioBase64 is actually valid base64
+    // FIX #6: Validate Base64 format and size
     if (typeof audioBase64 !== "string" || audioBase64.length > 10000000) {
-      return new Response(
-        JSON.stringify({ error: "File audio troppo grande (max ~5MB base64)" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return new Response(JSON.stringify({ error: "File audio troppo grande (max ~5MB)" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    if (!/^[A-Za-z0-9+/=]+$/.test(audioBase64.slice(0, 100))) {
-      return new Response(
-        JSON.stringify({ error: "Formato audio non valido" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    // Quick validate: first 20 chars must match base64 alphabet
+    if (!/^[A-Za-z0-9+/=]{10,}$/.test(audioBase64.slice(0, 20))) {
+      return new Response(JSON.stringify({ error: "Formato audio non valido" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     console.log("Received audio. MIME:", mimeType, "Base64 length:", audioBase64.length);
@@ -159,12 +157,16 @@ CRITICAL INSTRUCTIONS:
     const notes = data.choices?.[0]?.message?.content || "";
 
     if (!notes || notes.trim().length < 10) {
-      return new Response(JSON.stringify({
-        error: "Non è stato possibile trascrivere l'audio. Assicurati che la registrazione contenga parlato chiaro e riprova."
-      }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({
+          error:
+            "Non è stato possibile trascrivere l'audio. Assicurati che la registrazione contenga parlato chiaro e riprova.",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        },
+      );
     }
 
     console.log("Notes generated successfully, length:", notes.length);
@@ -174,9 +176,9 @@ CRITICAL INSTRUCTIONS:
     });
   } catch (e) {
     console.error("voice-to-notes error:", e);
-    return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });

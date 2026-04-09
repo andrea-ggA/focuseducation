@@ -74,6 +74,78 @@ async function safeJson(res: Response): Promise<any> {
   catch { throw new Error(`Errore del server (${res.status})`); }
 }
 
+function isEdgeTransportError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === "AbortError"
+    || err.message.includes("Failed to fetch")
+    || err.message.includes("NetworkError")
+    || err.message.includes("Load failed")
+    || err.message.includes("Failed to send a request to the Edge Function");
+}
+
+type EdgeRequestResult<T> = {
+  data: T | null;
+  rawText: string;
+  status: number;
+};
+
+async function parseEdgeResponse<T>(res: Response): Promise<EdgeRequestResult<T>> {
+  const rawText = await res.text();
+  if (!rawText) return { data: null, rawText: "", status: res.status };
+
+  try {
+    return { data: JSON.parse(rawText) as T, rawText, status: res.status };
+  } catch {
+    return { data: null, rawText, status: res.status };
+  }
+}
+
+export async function requestEdgeFunction<T = any>(
+  functionName: string,
+  body: unknown,
+  timeoutMs = 120_000,
+): Promise<EdgeRequestResult<T>> {
+  const token = await getAuthToken();
+  const url = `${supabaseUrl()}/functions/v1/${functionName}`;
+
+  try {
+    const res = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        apikey: anonKey(),
+      },
+      body: JSON.stringify(body),
+    }, timeoutMs);
+
+    return await parseEdgeResponse<T>(res);
+  } catch (err) {
+    if (!isEdgeTransportError(err)) throw err;
+    console.warn(`[backendApi] direct edge call failed for ${functionName}, retrying with sdk invoke`, err);
+  }
+
+  const { data, error } = await supabase.functions.invoke(functionName, { body });
+  if (error) throw new Error(error.message || `Errore chiamando ${functionName}`);
+
+  return { data: (data ?? null) as T | null, rawText: "", status: 200 };
+}
+
+export async function invokeEdgeFunction<T = any>(
+  functionName: string,
+  body: unknown,
+  timeoutMs = 120_000,
+): Promise<T> {
+  const result = await requestEdgeFunction<T>(functionName, body, timeoutMs);
+
+  if (result.status >= 200 && result.status < 300) {
+    return (result.data ?? {}) as T;
+  }
+
+  const payload = result.data as Record<string, any> | null;
+  throw new Error(payload?.error || payload?.message || result.rawText || `Errore del server (${result.status})`);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // § 4 AI TUTOR
 // Streaming SSE. Prova Cloud Run, fallback Edge Function.
@@ -164,10 +236,14 @@ export async function generateQuizOrFlashcards(
   const edgeType = typeMap[type] || type;
 
   if (!isLarge) {
-    const { data, error } = await supabase.functions.invoke("generate-study-content", {
-      body: { content, type: edgeType, jobId, documentId: documentId || null, title: title || null, asyncMode: false },
-    });
-    if (error) throw new Error(error.message || "Generazione fallita");
+    const data = await invokeEdgeFunction<any>("generate-study-content", {
+      content,
+      type: edgeType,
+      jobId,
+      documentId: documentId || null,
+      title: title || null,
+      asyncMode: false,
+    }, 150_000);
     if (data?.accepted && data?.jobId) return { mode: "async_edge", jobId: data.jobId };
     if (data?.quiz_id) return { mode: "sync_edge", quizId: data.quiz_id };
     if (data?.deck_id) return { mode: "sync_edge", deckId: data.deck_id };
@@ -176,10 +252,14 @@ export async function generateQuizOrFlashcards(
   }
 
   // Async: asyncMode:true + Realtime
-  const { data, error } = await supabase.functions.invoke("generate-study-content", {
-    body: { content, type: edgeType, jobId, documentId: documentId || null, title: title || null, asyncMode: true },
-  });
-  if (error) throw new Error(error.message || "Avvio generazione fallito");
+  const data = await invokeEdgeFunction<any>("generate-study-content", {
+    content,
+    type: edgeType,
+    jobId,
+    documentId: documentId || null,
+    title: title || null,
+    asyncMode: true,
+  }, 30_000);
   if (data?.accepted && data?.jobId) return { mode: "async_edge", jobId: data.jobId };
   if (data?.quiz_id) return { mode: "sync_edge", quizId: data.quiz_id };
   if (data?.deck_id) return { mode: "sync_edge", deckId: data.deck_id };
@@ -198,17 +278,14 @@ export async function generateQuizOrFlashcardsFromImages(
   title?:        string,
 ): Promise<GenerationResult> {
   const typeMap: Record<string, string> = { quiz:"quiz", flashcards:"flashcards", quiz_gamified:"quiz_gamified" };
-  const { data, error } = await supabase.functions.invoke("generate-study-content", {
-    body: {
-      images:     imageDataUrls,
-      type:       typeMap[type] || type,
-      jobId,
-      documentId: documentId || null,
-      title:      title || null,
-      asyncMode:  false,
-    },
-  });
-  if (error) throw new Error(error.message || "Generazione da immagini fallita");
+  const data = await invokeEdgeFunction<any>("generate-study-content", {
+    images:     imageDataUrls,
+    type:       typeMap[type] || type,
+    jobId,
+    documentId: documentId || null,
+    title:      title || null,
+    asyncMode:  false,
+  }, 150_000);
   if (data?.quiz_id) return { mode: "sync_edge", quizId: data.quiz_id };
   if (data?.deck_id) return { mode: "sync_edge", deckId: data.deck_id };
   if (data?.success) return { mode: "sync_edge" };
@@ -226,8 +303,7 @@ export async function generateSummary(
 ): Promise<string> {
   const body: any = { format, content };
   if (images && images.length > 0) body.images = images;
-  const { data, error } = await supabase.functions.invoke("generate-summary", { body });
-  if (error) throw new Error(error.message || `Generazione ${format} fallita`);
+  const data = await invokeEdgeFunction<any>("generate-summary", body, 180_000);
   const md = data?.content || data?.markdown || data?.result?.markdown || "";
   if (!md) throw new Error("Risposta vuota dal generatore di sommari");
   return md;
@@ -240,10 +316,8 @@ export async function generateSummary(
 export async function generateMindmap(
   content: string,
 ): Promise<{ nodes: any[]; edges: any[] }> {
-  const { data, error } = await supabase.functions.invoke("generate-mindmap", {
-    body: { content, text: content },
-  });
-  if (error || !data?.success) throw new Error(error?.message || "Generazione mappa fallita");
+  const data = await invokeEdgeFunction<any>("generate-mindmap", { content, text: content }, 120_000);
+  if (!data?.success) throw new Error("Generazione mappa fallita");
   return { nodes: data.nodes || [], edges: data.edges || [] };
 }
 
@@ -254,8 +328,7 @@ export async function generateMindmap(
 export async function generateMicroTasks(
   content: string,
 ): Promise<{ tasks: any[] }> {
-  const { data, error } = await supabase.functions.invoke("decompose-tasks", { body: { content } });
-  if (error) throw new Error(error.message || "Scomposizione fallita");
+  const data = await invokeEdgeFunction<any>("decompose-tasks", { content }, 120_000);
   return { tasks: data?.tasks || [] };
 }
 

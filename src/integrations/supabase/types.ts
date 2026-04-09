@@ -1387,6 +1387,7 @@ export type Database = {
         Returns: Json
       }
       update_daily_streak: { Args: { _user_id: string }; Returns: Json }
+      xp_to_level: { Args: { _xp: number }; Returns: number }
     }
     Enums: {
       app_role: "admin" | "moderator" | "user"

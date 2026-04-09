@@ -7,7 +7,10 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const PAYPAL_API = "https://api-m.sandbox.paypal.com";
+// FIX #7: Use environment variable instead of hardcoded sandbox URL
+const PAYPAL_API = Deno.env.get("PAYPAL_ENV") === "live"
+  ? "https://api-m.paypal.com"
+  : "https://api-m.sandbox.paypal.com";
 
 async function getPayPalAccessToken(): Promise<string> {
   const clientId = Deno.env.get("PAYPAL_CLIENT_ID");
@@ -57,7 +60,6 @@ serve(async (req) => {
     }
     const user = { id: authUser.id };
 
-    // Get user's active subscription
     const { data: sub, error: subError } = await supabase
       .from("subscriptions")
       .select("id, paypal_subscription_id, status")
@@ -72,7 +74,6 @@ serve(async (req) => {
       });
     }
 
-    // Cancel on PayPal if there's a PayPal subscription ID
     if (sub.paypal_subscription_id) {
       const accessToken = await getPayPalAccessToken();
       const cancelRes = await fetch(
@@ -94,7 +95,6 @@ serve(async (req) => {
       }
     }
 
-    // Update DB status
     const serviceClient = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!

@@ -7,10 +7,9 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-// FIX #7: Use environment variable instead of hardcoded sandbox URL
-const PAYPAL_API = Deno.env.get("PAYPAL_ENV") === "live"
-  ? "https://api-m.paypal.com"
-  : "https://api-m.sandbox.paypal.com";
+// FIX #7: Use PAYPAL_ENV instead of hardcoded sandbox URL
+const PAYPAL_API =
+  Deno.env.get("PAYPAL_ENV") === "live" ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com";
 
 async function getPayPalAccessToken(): Promise<string> {
   const clientId = Deno.env.get("PAYPAL_CLIENT_ID");
@@ -45,13 +44,14 @@ serve(async (req) => {
       });
     }
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: authHeader } } }
-    );
+    const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, {
+      global: { headers: { Authorization: authHeader } },
+    });
 
-    const { data: { user: authUser }, error: userError } = await supabase.auth.getUser();
+    const {
+      data: { user: authUser },
+      error: userError,
+    } = await supabase.auth.getUser();
     if (userError || !authUser) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
@@ -76,17 +76,14 @@ serve(async (req) => {
 
     if (sub.paypal_subscription_id) {
       const accessToken = await getPayPalAccessToken();
-      const cancelRes = await fetch(
-        `${PAYPAL_API}/v1/billing/subscriptions/${sub.paypal_subscription_id}/cancel`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ reason: "User requested cancellation from website" }),
-        }
-      );
+      const cancelRes = await fetch(`${PAYPAL_API}/v1/billing/subscriptions/${sub.paypal_subscription_id}/cancel`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reason: "User requested cancellation from website" }),
+      });
 
       if (!cancelRes.ok && cancelRes.status !== 204) {
         const err = await cancelRes.text();
@@ -95,20 +92,14 @@ serve(async (req) => {
       }
     }
 
-    const serviceClient = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
+    const serviceClient = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-    await serviceClient
-      .from("subscriptions")
-      .update({ status: "cancelled" })
-      .eq("id", sub.id);
+    await serviceClient.from("subscriptions").update({ status: "cancelled" }).eq("id", sub.id);
 
-    return new Response(
-      JSON.stringify({ success: true, message: "Subscription cancelled" }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return new Response(JSON.stringify({ success: true, message: "Subscription cancelled" }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (error) {
     console.error("Error:", error);
     const message = error instanceof Error ? error.message : "Unknown error";

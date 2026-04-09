@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { useSubscription } from "@/hooks/useSubscription";
+import { requestEdgeFunction } from "@/lib/backendApi";
 import type { Database } from "@/integrations/supabase/types";
 
 export interface UserCredits {
@@ -125,11 +126,25 @@ export const useCredits = () => {
       if (totalAvailable < cost) return false;
 
       try {
-        const { data, error } = await supabase.functions.invoke("spend-credits", {
-          body: { action, cost, description: `Speso ${cost} NeuroCredits per ${action}` },
-        });
+        const { data, status } = await requestEdgeFunction<{
+          success?: boolean;
+          error?: string;
+          code?: string;
+          balance?: number;
+          rollover_balance?: number;
+        }>("spend-credits", {
+          action,
+          cost,
+          description: `Speso ${cost} NeuroCredits per ${action}`,
+        }, 30_000);
 
-        if (error) { console.error("[useCredits] spend-credits error:", error); return false; }
+        if (status >= 400) {
+          if (data?.balance !== undefined) {
+            setCredits({ balance: data.balance, rollover_balance: data.rollover_balance ?? 0 });
+          }
+          return false;
+        }
+
         if (!data?.success) {
           if (data?.balance !== undefined) {
             setCredits({ balance: data.balance, rollover_balance: data.rollover_balance ?? 0 });

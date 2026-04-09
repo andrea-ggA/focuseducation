@@ -7,6 +7,15 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+// FIX #9: Added rate limiting (previously missing — exposed to Gemini API abuse)
+async function checkRateLimit(supabaseAdmin: any, userId: string): Promise<boolean> {
+  const { data: allowed } = await supabaseAdmin.rpc("check_and_increment_rate_limit", {
+    _user_id: userId,
+    _max_per_min: 10,
+  });
+  return allowed !== false;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -21,11 +30,10 @@ serve(async (req) => {
       );
     }
 
-    const anonClient = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: authHeader } } }
-    );
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const anonClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!, {
+      global: { headers: { Authorization: authHeader } },
+    });
     const { data: { user: authUser }, error: authError } = await anonClient.auth.getUser();
     if (authError || !authUser) {
       return new Response(
@@ -35,13 +43,31 @@ serve(async (req) => {
     }
     const user = { id: authUser.id };
 
+    // FIX #9: Check rate limit before processing
+    const supabaseAdmin = createClient(supabaseUrl, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    const rateOk = await checkRateLimit(supabaseAdmin, user.id);
+    if (!rateOk) {
+      return new Response(
+        JSON.stringify({ error: "Troppe richieste. Attendi un minuto." }),
+        { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const { audioBase64, mimeType } = await req.json();
 
     if (!audioBase64) throw new Error("Missing audio data");
 
+    // FIX #6: Validate that audioBase64 is actually valid base64
     if (typeof audioBase64 !== "string" || audioBase64.length > 10000000) {
       return new Response(
-        JSON.stringify({ error: "File audio troppo grande (max 5MB)" }),
+        JSON.stringify({ error: "File audio troppo grande (max ~5MB base64)" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (!/^[A-Za-z0-9+/=]+$/.test(audioBase64.slice(0, 100))) {
+      return new Response(
+        JSON.stringify({ error: "Formato audio non valido" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -133,8 +159,8 @@ CRITICAL INSTRUCTIONS:
     const notes = data.choices?.[0]?.message?.content || "";
 
     if (!notes || notes.trim().length < 10) {
-      return new Response(JSON.stringify({ 
-        error: "Non è stato possibile trascrivere l'audio. Assicurati che la registrazione contenga parlato chiaro e riprova." 
+      return new Response(JSON.stringify({
+        error: "Non è stato possibile trascrivere l'audio. Assicurati che la registrazione contenga parlato chiaro e riprova."
       }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },

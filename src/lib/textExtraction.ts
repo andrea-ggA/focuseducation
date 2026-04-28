@@ -1,18 +1,32 @@
 import * as pdfjsLib from "pdfjs-dist";
+import pdfWorkerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import mammoth from "mammoth";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+interface PdfTextItem {
+  str: string;
+  hasEOL?: boolean;
+}
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
 /**
  * Normalize extracted text: strip metadata noise, collapse whitespace.
  * This ensures character count reflects ONLY readable content.
  */
 function normalizeText(raw: string): string {
-  return raw
+  const withoutControlChars = Array.from(raw).map((char) => {
+    const code = char.charCodeAt(0);
+    const isControlChar =
+      (code >= 0x00 && code <= 0x08) ||
+      code === 0x0b ||
+      code === 0x0c ||
+      (code >= 0x0e && code <= 0x1f) ||
+      code === 0x7f;
+    return isControlChar ? " " : char;
+  }).join("");
+  return withoutControlChars
     // Remove XML/HTML tags that may leak from docx/pdf
     .replace(/<[^>]+>/g, " ")
-    // Remove common PDF artifact patterns (e.g., form feeds, null bytes)
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ")
     // Collapse runs of whitespace (spaces, tabs) into a single space
     .replace(/[ \t]+/g, " ")
     // Collapse more than 2 consecutive newlines into 2
@@ -29,7 +43,7 @@ export async function extractTextFromPdf(arrayBuffer: ArrayBuffer): Promise<stri
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
     // Join items with space; items with hasEOL get a newline instead
-    const pageText = content.items.map((item: any) =>
+    const pageText = (content.items as PdfTextItem[]).map((item) =>
       item.hasEOL ? item.str + "\n" : item.str
     ).join(" ");
     pageTexts.push(pageText);

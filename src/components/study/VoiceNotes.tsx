@@ -13,6 +13,9 @@ interface VoiceNotesProps {
 
 const ACCEPTED_AUDIO_FORMATS = ".mp3,.wav,.ogg,.m4a,.aac,.flac,.wma,.webm,.opus,.mp4";
 
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 const VoiceNotes = forwardRef<HTMLDivElement, VoiceNotesProps>(({ onNotesGenerated }, ref) => {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -72,11 +75,11 @@ const VoiceNotes = forwardRef<HTMLDivElement, VoiceNotesProps>(({ onNotesGenerat
 
       setTranscript(notes);
       toast({ title: "Appunti generati! 📝", description: `${notes.length} caratteri di appunti strutturati.` });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Transcription error:", err);
       toast({
         title: "Errore trascrizione",
-        description: err.message || "Trascrizione fallita. Riprova.",
+        description: getErrorMessage(err, "Trascrizione fallita. Riprova."),
         variant: "destructive",
       });
     } finally {

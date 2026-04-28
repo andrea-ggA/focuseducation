@@ -8,6 +8,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { sm2, QUALITY_OPTIONS } from "@/lib/spacedRepetition";
 import { playCorrectSound, playWrongSound, playCompletionSound, fireCompletionConfetti } from "@/lib/soundEffects";
+import { recordFlashcardReview } from "@/lib/progression";
+import { useToast } from "@/hooks/use-toast";
 
 const BURST_DURATION = 5 * 60;
 const MAX_CARDS      = 8;
@@ -24,6 +26,26 @@ interface BurstQuestion {
   correct_answer: number; explanation: string; topic: string;
 }
 type BurstItem = BurstCard | BurstQuestion;
+interface DeckIdRow { id: string; }
+interface QuizIdRow { id: string; }
+interface BurstCardRow {
+  id: string;
+  front: string;
+  back: string;
+  topic: string | null;
+  deck_id: string;
+  mastery_level: number;
+  easiness_factor: number | null;
+  next_review_at: string | null;
+}
+interface QuizQuestionRow {
+  id: string;
+  question: string;
+  options: unknown;
+  correct_answer: number;
+  explanation: string;
+  topic: string;
+}
 
 interface FocusBurstProps {
   onClose:    () => void;
@@ -32,6 +54,7 @@ interface FocusBurstProps {
 
 export default function FocusBurst({ onClose, onComplete }: FocusBurstProps) {
   const { user }                      = useAuth();
+  const { toast }                     = useToast();
   const [items, setItems]             = useState<BurstItem[]>([]);
   const [current, setCurrent]         = useState(0);
   const [flipped, setFlipped]         = useState(false);
@@ -58,13 +81,21 @@ export default function FocusBurst({ onClose, onComplete }: FocusBurstProps) {
   // Load cards only after user taps Start (not on mount)
   const startBurst = async () => {
     if (!user) return;
+    setItems([]);
+    setCurrent(0);
+    setFlipped(false);
+    setAnswered(null);
+    setDone(false);
+    setScore(0);
+    setCorrectCount(0);
+    setTimeLeft(BURST_DURATION);
     setLoading(true);
     setStarted(true);
     const load = async () => {
       // BUG FIX: two-step query — get deck IDs first, then filter flashcards by deck_id
       const { data: userDecks } = await supabase
         .from("flashcard_decks").select("id").eq("user_id", user.id);
-      const deckIds = (userDecks || []).map((d: any) => d.id);
+      const deckIds = ((userDecks || []) as DeckIdRow[]).map((d) => d.id);
 
       const [cardsRes, questionsRes] = await Promise.allSettled([
         deckIds.length === 0
@@ -87,13 +118,13 @@ export default function FocusBurst({ onClose, onComplete }: FocusBurstProps) {
 
       const burst: BurstItem[] = [];
       if (cardsRes.status === "fulfilled" && cardsRes.value.data) {
-        for (const c of (cardsRes.value.data as any[]).slice(0, MAX_CARDS)) {
+        for (const c of ((cardsRes.value.data || []) as BurstCardRow[]).slice(0, MAX_CARDS)) {
           burst.push({ type:"flashcard", id:c.id, front:c.front, back:c.back, topic:c.topic,
             deck_id:c.deck_id, mastery_level:c.mastery_level, easiness_factor:c.easiness_factor??2.5, next_review_at:c.next_review_at });
         }
       }
       if (questionsRes.status === "fulfilled" && questionsRes.value.data) {
-        const quizIds = (questionsRes.value.data as any[]).map((q: any) => q.id);
+        const quizIds = (questionsRes.value.data as QuizIdRow[]).map((q) => q.id);
         if (quizIds.length > 0) {
           // Step 2: fetch questions from those quizzes — no join filter needed
           const { data: qData } = await supabase
@@ -102,9 +133,9 @@ export default function FocusBurst({ onClose, onComplete }: FocusBurstProps) {
             .in("quiz_id", quizIds)
             .order("created_at", { ascending: false })
             .limit(MAX_QUESTIONS * 4);
-          const pool = (qData || []).sort(() => Math.random() - 0.5).slice(0, MAX_QUESTIONS);
+          const pool = ((qData || []) as QuizQuestionRow[]).sort(() => Math.random() - 0.5).slice(0, MAX_QUESTIONS);
           for (const q of pool) {
-            burst.push({ type:"question", id:q.id, question:q.question, options:q.options as any as string[],
+            burst.push({ type:"question", id:q.id, question:q.question, options:Array.isArray(q.options) ? q.options.filter((opt): opt is string => typeof opt === "string") : [],
               correct_answer:q.correct_answer, explanation:q.explanation, topic:q.topic });
           }
         }
@@ -120,7 +151,19 @@ export default function FocusBurst({ onClose, onComplete }: FocusBurstProps) {
       setItems(mixed);
       setLoading(false);
     };
-    await load();
+    try {
+      await load();
+    } catch (error) {
+      console.error("[FocusBurst] start failed:", error);
+      setItems([]);
+      setStarted(false);
+      setLoading(false);
+      toast({
+        title: "Focus Burst non disponibile",
+        description: "Impossibile preparare la sessione. Riprova.",
+        variant: "destructive",
+      });
+    }
   };
 
   const finishBurst = useCallback(() => {
@@ -139,22 +182,36 @@ export default function FocusBurst({ onClose, onComplete }: FocusBurstProps) {
   }, [user, items, timeLeft]);
 
   useEffect(() => {
-    if (loading || done) return;
+    if (!started || loading || done) return;
     timerRef.current = setInterval(() => {
       setTimeLeft(t => { if (t <= 1) { clearInterval(timerRef.current); finishBurst(); return 0; } return t-1; });
     }, 1000);
     return () => clearInterval(timerRef.current);
-  }, [loading, done, finishBurst]);
+  }, [started, loading, done, finishBurst]);
 
   const handleFlashcardRate = async (quality: number) => {
     const item = items[current] as BurstCard;
-    const result = sm2(quality, item.mastery_level, item.easiness_factor,
-      item.next_review_at ? new Date(item.next_review_at) : null);
-    await supabase.from("flashcards").update({
-      mastery_level: result.newMasteryLevel,
-      easiness_factor: result.newEasinessFactor,
-      next_review_at: result.nextReviewAt.toISOString(),
-    }).eq("id", item.id);
+    const result = sm2(quality, item.mastery_level, item.easiness_factor);
+    try {
+      if (!user) throw new Error("Utente non autenticato");
+      await recordFlashcardReview({
+        userId: user.id,
+        cardId: item.id,
+        deckId: item.deck_id,
+        quality,
+        masteryLevel: result.newMasteryLevel,
+        easinessFactor: result.newEasinessFactor,
+        nextReviewAt: result.nextReviewAt,
+      });
+    } catch (error) {
+      console.error("[FocusBurst] flashcard review failed:", error);
+      toast({
+        title: "Salvataggio non riuscito",
+        description: "La revisione della flashcard non è stata salvata. Riprova.",
+        variant: "destructive",
+      });
+      return;
+    }
     if (quality >= 4) { playCorrectSound(); setCorrectCount(c=>c+1); setScore(s=>s+10); }
     else playWrongSound();
     setFlipped(false);
@@ -178,12 +235,56 @@ export default function FocusBurst({ onClose, onComplete }: FocusBurstProps) {
   const mins = Math.floor(timeLeft/60);
   const secs = timeLeft % 60;
   const progressPct = items.length > 0 ? Math.round((current/items.length)*100) : 0;
+  const availableDecks = selectedDeckId === "all" ? decks.length : decks.filter((deck) => deck.id === selectedDeckId).length;
 
   if (loading) return (
     <div className="fixed inset-0 z-50 bg-background flex items-center justify-center">
       <div className="text-center space-y-3">
         <Zap className="h-10 w-10 text-primary animate-bounce mx-auto" />
         <p className="text-sm text-muted-foreground">Preparando il Focus Burst...</p>
+      </div>
+    </div>
+  );
+
+  if (!started) return (
+    <div className="fixed inset-0 z-50 bg-background flex items-center justify-center p-6">
+      <div className="bg-card border border-border rounded-2xl shadow-card p-5 w-full max-w-md space-y-4">
+        <div className="text-center space-y-2">
+          <div className="mx-auto h-12 w-12 rounded-2xl bg-primary/10 flex items-center justify-center">
+            <Brain className="h-6 w-6 text-primary" />
+          </div>
+          <h2 className="text-xl font-bold text-foreground">Avvia Focus Burst</h2>
+          <p className="text-sm text-muted-foreground">
+            Sessione rapida da 5 minuti con flashcard e quiz, senza perdere tempo prima di iniziare.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">Deck da usare</p>
+          <Select value={selectedDeckId} onValueChange={setSelectedDeckId} disabled={loadingDecks}>
+            <SelectTrigger>
+              <SelectValue placeholder={loadingDecks ? "Caricamento deck..." : "Seleziona deck"} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Tutti i deck</SelectItem>
+              {decks.map((deck) => (
+                <SelectItem key={deck.id} value={deck.id}>
+                  {deck.title}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground">
+            {loadingDecks ? "Sto caricando i tuoi deck..." : `${availableDecks} deck disponibili per la sessione.`}
+          </p>
+        </div>
+
+        <div className="flex gap-3">
+          <Button variant="outline" className="flex-1" onClick={onClose}>Annulla</Button>
+          <Button className="flex-1" onClick={startBurst} disabled={loadingDecks}>
+            <Zap className="h-4 w-4 mr-2" /> Inizia
+          </Button>
+        </div>
       </div>
     </div>
   );

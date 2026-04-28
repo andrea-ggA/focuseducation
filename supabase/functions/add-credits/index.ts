@@ -15,6 +15,7 @@ const ALLOWED_ACTIONS: Record<string, number> = {
   fortune_wheel:      100,
   referral_bonus:      50,
   achievement_reward:  30,
+  tutor_refund:         5,
   admin_grant:       9999,
 };
 

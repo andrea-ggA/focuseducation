@@ -5,6 +5,11 @@ import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
 import { FileText, Sparkles } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import { SAFE_MARKDOWN_COMPONENTS, isSafeShareToken } from "@/lib/security";
+
+interface SharedSummaryContent {
+  markdown?: string;
+}
 
 const SharedSummary = () => {
   const { token } = useParams<{ token: string }>();
@@ -15,7 +20,11 @@ const SharedSummary = () => {
   const [creatorName, setCreatorName] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token) return;
+    if (!isSafeShareToken(token)) {
+      setNotFound(true);
+      setLoading(false);
+      return;
+    }
     const fetch = async () => {
       const { data } = await supabase
         .from("generated_content")
@@ -25,7 +34,8 @@ const SharedSummary = () => {
 
       if (!data) { setNotFound(true); setLoading(false); return; }
       setTitle(data.title || "Riassunto");
-      setMarkdown((data.content as any)?.markdown || JSON.stringify(data.content));
+      const content = data.content as SharedSummaryContent | null;
+      setMarkdown(content?.markdown || JSON.stringify(data.content));
 
       const { data: profile } = await supabase
         .from("profiles")
@@ -66,7 +76,7 @@ const SharedSummary = () => {
 
         {/* Content */}
         <div className="bg-card rounded-xl border border-border shadow-lg p-6 md:p-8 prose prose-sm dark:prose-invert max-w-none">
-          <ReactMarkdown>{markdown}</ReactMarkdown>
+          <ReactMarkdown components={SAFE_MARKDOWN_COMPONENTS}>{markdown}</ReactMarkdown>
         </div>
 
         {/* CTA */}

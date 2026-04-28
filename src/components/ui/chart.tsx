@@ -5,6 +5,10 @@ import { cn } from "@/lib/utils";
 
 // Format: { THEME_NAME: CSS_SELECTOR }
 const THEMES = { light: "", dark: ".dark" } as const;
+const SAFE_CSS_NAME = /^[a-zA-Z0-9_-]+$/;
+const SAFE_HEX_COLOR = /^#([0-9a-fA-F]{3,8})$/;
+const SAFE_FUNC_COLOR = /^(rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color)\(([^()]+)\)$/i;
+const SAFE_VAR_COLOR = /^var\(--[a-zA-Z0-9_-]+\)$/;
 
 export type ChartConfig = {
   [k in string]: {
@@ -29,6 +33,19 @@ function useChart() {
   return context;
 }
 
+function sanitizeCssIdentifier(input: string): string {
+  return SAFE_CSS_NAME.test(input) ? input : input.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function sanitizeCssColor(input: string | undefined): string | null {
+  if (!input) return null;
+  const value = input.trim();
+  if (SAFE_HEX_COLOR.test(value)) return value;
+  if (SAFE_FUNC_COLOR.test(value)) return value;
+  if (SAFE_VAR_COLOR.test(value)) return value;
+  return null;
+}
+
 const ChartContainer = React.forwardRef<
   HTMLDivElement,
   React.ComponentProps<"div"> & {
@@ -37,7 +54,7 @@ const ChartContainer = React.forwardRef<
   }
 >(({ id, className, children, config, ...props }, ref) => {
   const uniqueId = React.useId();
-  const chartId = `chart-${id || uniqueId.replace(/:/g, "")}`;
+  const chartId = sanitizeCssIdentifier(`chart-${id || uniqueId.replace(/:/g, "")}`);
 
   return (
     <ChartContext.Provider value={{ config }}>
@@ -59,7 +76,9 @@ const ChartContainer = React.forwardRef<
 ChartContainer.displayName = "Chart";
 
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
-  const colorConfig = Object.entries(config).filter(([_, config]) => config.theme || config.color);
+  const colorConfig = Object.entries(config)
+    .map(([key, item]) => ({ key: sanitizeCssIdentifier(key), item }))
+    .filter(({ item }) => item.theme || item.color);
 
   if (!colorConfig.length) {
     return null;
@@ -73,8 +92,9 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
             ([theme, prefix]) => `
 ${prefix} [data-chart=${id}] {
 ${colorConfig
-  .map(([key, itemConfig]) => {
-    const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] || itemConfig.color;
+  .map(({ key, item }) => {
+    const rawColor = item.theme?.[theme as keyof typeof item.theme] || item.color;
+    const color = sanitizeCssColor(rawColor);
     return color ? `  --color-${key}: ${color};` : null;
   })
   .join("\n")}

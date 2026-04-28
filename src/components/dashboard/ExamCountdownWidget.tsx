@@ -40,7 +40,7 @@ export default function ExamCountdownWidget() {
       // examInfo loaded but no exam set → show form
       setEditing(true);
     }
-  }, [examInfo?.exam_date, examInfo?.exam_subject]);
+  }, [examInfo]);
 
   const handleSave = async () => {
     if (!dateInput) return;

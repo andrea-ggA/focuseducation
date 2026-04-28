@@ -20,6 +20,17 @@ interface PowerUp {
   color: string;
 }
 
+interface PurchasePowerupResult {
+  success?: boolean;
+  error?: string;
+  xp_after?: number;
+  xp_cost?: number;
+}
+
+interface ConvertXpToCreditsResult {
+  success?: boolean;
+}
+
 const POWERUPS: PowerUp[] = [
   {
     id: "streak_freeze",
@@ -147,12 +158,12 @@ const PowerUpShop = () => {
 
     // FIX: acquisto atomico server-side via RPC con whitelist prezzi
     // Previene: (1) race condition multi-tab, (2) price manipulation da client
-    const { data, error } = await supabase.rpc("purchase_powerup" as any, {
+    const { data, error } = await supabase.rpc("purchase_powerup", {
       _user_id:      user.id,
       _powerup_type: powerup.type,
       _max_qty:      powerup.maxQuantity,
     });
-    const result = data as any;
+    const result = data as PurchasePowerupResult | null;
 
     if (error || !result?.success) {
       const msg = result?.error === "insufficient_xp" ? "XP insufficienti"
@@ -184,12 +195,12 @@ const PowerUpShop = () => {
     }
     setConverting(true);
     // FIX: conversione atomica server-side via RPC
-    const { data, error } = await supabase.rpc("convert_xp_to_credits" as any, {
+    const { data, error } = await supabase.rpc("convert_xp_to_credits", {
       _user_id:      user.id,
       _xp_cost:      XP_TO_CREDITS_RATE,
       _credits_gain: CREDITS_PER_CONVERSION,
     });
-    const convResult = data as any;
+    const convResult = data as ConvertXpToCreditsResult | null;
     if (error || !convResult?.success) {
       toast({ title: "Errore", description: "Conversione fallita. Riprova.", variant: "destructive" });
       setConverting(false);

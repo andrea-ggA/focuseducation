@@ -8,7 +8,47 @@ const corsHeaders = {
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
-async function callAIWithRetry(apiKey: string, body: any, retries = 3): Promise<any> {
+interface ErrorWithStatus {
+  status?: number;
+}
+
+interface QuizAttemptSummary {
+  score: number;
+  total_points: number;
+  correct_answers: number;
+  total_answered: number;
+  completed_at: string;
+}
+
+interface FocusSessionSummary {
+  duration_minutes: number;
+  completed: boolean;
+  session_type: string | null;
+  started_at: string;
+}
+
+interface PendingTaskSummary {
+  title: string;
+  completed: boolean;
+  priority: string | null;
+  estimated_minutes: number | null;
+}
+
+interface ErrorTopicRow {
+  topic: string | null;
+}
+
+interface StudyPlanRequestBody {
+  energy_level?: string;
+  language?: string;
+}
+
+type AIRequestBody = Record<string, unknown>;
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
+async function callAIWithRetry(apiKey: string, body: AIRequestBody, retries = 3): Promise<Record<string, unknown>> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
@@ -27,13 +67,15 @@ async function callAIWithRetry(apiKey: string, body: any, retries = 3): Promise<
         if (attempt < retries) { await sleep(2000 * (attempt + 1)); continue; }
         throw new Error("AI error: " + res.status);
       }
-      return await res.json();
-    } catch (e: any) {
-      if (e.status === 402 || e.status === 429) throw e;
+      return await res.json() as Record<string, unknown>;
+    } catch (e: unknown) {
+      const errorWithStatus = e as ErrorWithStatus;
+      if (errorWithStatus.status === 402 || errorWithStatus.status === 429) throw e;
       if (attempt < retries) { await sleep(2000 * (attempt + 1)); continue; }
       throw e;
     }
   }
+  throw new Error("AI request failed");
 }
 
 serve(async (req) => {
@@ -61,7 +103,7 @@ serve(async (req) => {
       });
     }
 
-    const body        = await req.json();
+    const body = await req.json() as StudyPlanRequestBody;
     const energyLevel = body.energy_level || "balanced";
     const language    = body.language || "it";
 
@@ -104,12 +146,12 @@ serve(async (req) => {
     // Estrai dati (Promise.allSettled non crasha su errori individuali)
     const profile       = profileRes.status === "fulfilled" ? profileRes.value.data  : null;
     const xp            = xpRes.status === "fulfilled"      ? xpRes.value.data       : null;
-    const recentQuizzes = quizzesRes.status === "fulfilled" ? quizzesRes.value.data ?? [] : [];
+    const recentQuizzes = (quizzesRes.status === "fulfilled" ? quizzesRes.value.data ?? [] : []) as QuizAttemptSummary[];
     const decks         = flashdecksRes.status === "fulfilled" ? flashdecksRes.value.data ?? [] : [];
-    const focusSessions = focusRes.status === "fulfilled"   ? focusRes.value.data ?? [] : [];
-    const pendingTasks  = tasksRes.status === "fulfilled"   ? tasksRes.value.data ?? [] : [];
+    const focusSessions = (focusRes.status === "fulfilled"   ? focusRes.value.data ?? [] : []) as FocusSessionSummary[];
+    const pendingTasks  = (tasksRes.status === "fulfilled"   ? tasksRes.value.data ?? [] : []) as PendingTaskSummary[];
     const dueCount      = dueCardsRes.status === "fulfilled" ? (dueCardsRes.value.data as number) ?? 0 : 0;
-    const errorRows     = errorsRes.status === "fulfilled"  ? errorsRes.value.data ?? [] : [];
+    const errorRows     = (errorsRes.status === "fulfilled"  ? errorsRes.value.data ?? [] : []) as ErrorTopicRow[];
 
     // Calcola statistiche
     const avgAccuracy = recentQuizzes.length > 0
@@ -123,7 +165,7 @@ serve(async (req) => {
 
     // Top topic con errori (per personalizzare il piano)
     const topicErrors: Record<string, number> = {};
-    for (const row of errorRows as any[]) {
+    for (const row of errorRows) {
       const t = row.topic || "Generale";
       topicErrors[t] = (topicErrors[t] || 0) + 1;
     }
@@ -247,7 +289,7 @@ For each day: 2-5 activities. Keep activity titles concise and actionable.`,
     });
 
     const toolCall = aiData.choices?.[0]?.message?.tool_calls?.[0];
-    let plan: any;
+    let plan: Record<string, unknown> | null = null;
 
     if (toolCall?.function?.arguments) {
       plan = JSON.parse(toolCall.function.arguments);
@@ -288,10 +330,11 @@ For each day: 2-5 activities. Keep activity titles concise and actionable.`,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
 
-  } catch (e: any) {
+  } catch (e: unknown) {
+    const errorWithStatus = e as ErrorWithStatus;
     console.error("generate-study-plan error:", e);
-    return new Response(JSON.stringify({ error: e.message || "Errore sconosciuto" }), {
-      status: e.status || 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({ error: getErrorMessage(e, "Errore sconosciuto") }), {
+      status: errorWithStatus.status || 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

@@ -19,9 +19,17 @@ import { extractTextFromFile } from "@/lib/textExtraction";
 interface SavedMap {
   id: string;
   title: string | null;
-  content: any;
+  content: MindMapContent | null;
   created_at: string;
 }
+
+interface MindMapContent {
+  nodes?: unknown[];
+  edges?: unknown[];
+}
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
 
 const SUPPORTED_EXTENSIONS = [".txt", ".md", ".pdf", ".docx", ".doc"];
 
@@ -120,8 +128,12 @@ const MindMaps = () => {
         setSelectedFile(null);
       }
       toast({ title: "Mappa generata! 🧠", description: `Spesi ${CREDIT_COSTS.mindmap} NeuroCredits` });
-    } catch (err: any) {
-      toast({ title: "Errore", description: err.message || "Generazione fallita", variant: "destructive" });
+    } catch (err: unknown) {
+      toast({
+        title: "Errore",
+        description: getErrorMessage(err, "Generazione fallita"),
+        variant: "destructive",
+      });
       await refreshCredits();
     } finally {
       setGenerating(false);
@@ -136,7 +148,7 @@ const MindMaps = () => {
   };
 
   if (activeMap) {
-    const content = activeMap.content as any;
+    const content = activeMap.content;
     return (
       <div className="min-h-screen bg-background">
         <AppHeader />
@@ -259,7 +271,7 @@ const MindMaps = () => {
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-card-foreground truncate">{map.title || "Mappa senza titolo"}</p>
                         <p className="text-xs text-muted-foreground mt-1">{new Date(map.created_at).toLocaleDateString("it-IT")}</p>
-                        <p className="text-xs text-muted-foreground">{(map.content as any)?.nodes?.length || 0} nodi</p>
+                        <p className="text-xs text-muted-foreground">{map.content?.nodes?.length || 0} nodi</p>
                       </div>
                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         {!isPro && (

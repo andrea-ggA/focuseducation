@@ -37,6 +37,9 @@ const FREE_FEATURES = [
   "Tutor AI (limitato)",
 ];
 
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 const PlanSection = () => {
   const { subscription, hasSubscription } = useSubscription();
   const { toast } = useToast();
@@ -57,8 +60,12 @@ const PlanSection = () => {
       setCancelDialogOpen(false);
       toast({ title: "Abbonamento disdetto", description: "Il pagamento automatico è stato annullato immediatamente." });
       setTimeout(() => window.location.reload(), 1500);
-    } catch (err: any) {
-      toast({ title: "Errore", description: err.message || "Impossibile annullare l'abbonamento.", variant: "destructive" });
+    } catch (err: unknown) {
+      toast({
+        title: "Errore",
+        description: getErrorMessage(err, "Impossibile annullare l'abbonamento."),
+        variant: "destructive",
+      });
     } finally {
       setCancelling(false);
     }

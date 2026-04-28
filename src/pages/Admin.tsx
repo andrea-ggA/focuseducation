@@ -79,6 +79,9 @@ const STATUS_OPTIONS = ["active", "cancelled", "expired", "pending"];
 const ROLE_OPTIONS = ["user", "moderator", "admin"];
 const TICKET_STATUS = ["open", "in_progress", "closed"];
 
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 const Admin = () => {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -299,8 +302,12 @@ const Admin = () => {
       await supabase.from("profiles").delete().eq("user_id", userId);
       setUsers(prev => prev.filter(u => u.user_id !== userId));
       toast({ title: "Dati utente eliminati" });
-    } catch (e: any) {
-      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    } catch (e: unknown) {
+      toast({
+        title: "Errore",
+        description: getErrorMessage(e, "Eliminazione dati utente non riuscita."),
+        variant: "destructive",
+      });
     } finally {
       setDeletingUser(null);
     }

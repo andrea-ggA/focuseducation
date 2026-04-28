@@ -215,7 +215,7 @@ const TopicSelector = ({ type, sourceId, onStart, onBack }: TopicSelectorProps) 
               <p className="text-sm font-medium text-card-foreground truncate">{t.topic}</p>
             </div>
             <Badge variant="secondary" className="text-[10px] shrink-0 font-mono">
-              Cap. {i + 1}
+              {t.count} {type === "quiz" ? "domande" : "carte"}
             </Badge>
           </motion.button>
         ))}

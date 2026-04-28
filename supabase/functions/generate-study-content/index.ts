@@ -58,13 +58,77 @@ const MAX_CHUNKS = 16; // alzato 8→16 per coprire doc grandi
 const CONCURRENCY = 4;
 const ITEMS_PER_CHUNK = 25; // alzato 15→25 per più domande per chunk
 
+interface ErrorWithStatus {
+  status?: number;
+  message?: string;
+}
+
+type ChatVisionPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type AIChatMessage = { role: "system" | "user" | "assistant"; content: string | ChatVisionPart[] };
+
+interface QuizQuestionGen {
+  question: string;
+  options: string[];
+  correct_answer: number;
+  explanation?: string;
+  topic?: string;
+  points?: number;
+  time_limit_seconds?: number;
+}
+
+interface FlashcardGen {
+  front: string;
+  back: string;
+  topic?: string;
+  difficulty?: string;
+}
+
+interface ParsedCollection {
+  title?: string;
+  questions?: QuizQuestionGen[];
+  cards?: FlashcardGen[];
+}
+
+interface ChunkResult {
+  chunkNum: number;
+  title: string | null;
+  questions: QuizQuestionGen[];
+  cards: FlashcardGen[];
+  error?: string;
+}
+
+type JsonRecord = Record<string, unknown>;
+
+type SupabaseUpdater = {
+  from: (table: string) => {
+    update: (updates: JobUpdate) => {
+      eq: (column: string, value: string) => Promise<{ error: { message: string } | null }>;
+    };
+  };
+};
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
+const stripControlCharacters = (value: string) =>
+  Array.from(value).map((char) => {
+    const code = char.charCodeAt(0);
+    const isControlChar =
+      (code >= 0x00 && code <= 0x08) ||
+      code === 0x0b ||
+      code === 0x0c ||
+      (code >= 0x0e && code <= 0x1f) ||
+      code === 0x7f;
+    return isControlChar ? " " : char;
+  }).join("");
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // § 3 TEXT CLEANING
 // cleanText: ligature, trattini fine riga, ctrl chars, whitespace.
 // removePageArtifacts: righe corte ripetute ≥3 volte = header/footer.
 // ═══════════════════════════════════════════════════════════════════════════════
 function cleanText(raw: string): string {
-  return raw
+  return stripControlCharacters(raw)
     .replace(/ﬁ/g, "fi")
     .replace(/ﬂ/g, "fl")
     .replace(/ﬀ/g, "ff")
@@ -74,7 +138,6 @@ function cleanText(raw: string): string {
     .replace(/-\n(\S)/g, "$1")
     .replace(/\n\s*(?:Page|Pagina|Pag\.?|p\.)\s*\d+\s*\n/gi, "\n")
     .replace(/\n\s*\d{1,4}\s*\n/g, "\n")
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ")
     .replace(/\uFFFD/g, " ")
     .replace(/[\u200B-\u200F]/g, "")
     .replace(/\u00AD/g, "")
@@ -178,11 +241,11 @@ function sleep(ms: number) {
 
 async function callAI(
   apiKey: string,
-  messages: any[],
+  messages: AIChatMessage[],
   model: string = FAST_MODEL,
   retries = 3,
   maxTokens = 16000,
-): Promise<any> {
+): Promise<Record<string, unknown>> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const ctrl = new AbortController();
@@ -215,13 +278,14 @@ async function callAI(
         }
         throw new Error("AI generation failed: " + res.status);
       }
-      return await res.json();
-    } catch (e: any) {
-      if (e.status === 402 || e.status === 429) throw e;
-      const isTimeout = e.name === "AbortError" || e.message?.includes("aborted");
+      return await res.json() as Record<string, unknown>;
+    } catch (e: unknown) {
+      const errorWithStatus = e as ErrorWithStatus;
+      if (errorWithStatus.status === 402 || errorWithStatus.status === 429) throw e;
+      const isTimeout = e instanceof Error && (e.name === "AbortError" || e.message.includes("aborted"));
       console.error(
         `AI ${isTimeout ? "timeout" : "network"} error (attempt ${attempt + 1}/${retries + 1}):`,
-        e.message || e,
+        getErrorMessage(e, "Errore sconosciuto"),
       );
       if (attempt < retries) {
         await sleep(isTimeout ? 1000 : 2000 * (attempt + 1));
@@ -232,14 +296,15 @@ async function callAI(
         console.warn(`[callAI] switching to fallback model: ${FALLBACK_MODEL}`);
         return callAI(apiKey, messages, FALLBACK_MODEL, 1, maxTokens);
       }
-      throw isTimeout ? new Error("Timeout risposta AI (45s). Riprova.") : e;
+       throw isTimeout ? new Error("Timeout risposta AI (45s). Riprova.") : e;
     }
   }
+  throw new Error("AI request failed");
 }
 
 type JobUpdate = Record<string, unknown>;
 
-async function updateJob(supabase: any, jobId: string | undefined, updates: JobUpdate) {
+async function updateJob(supabase: SupabaseUpdater, jobId: string | undefined, updates: JobUpdate) {
   if (!jobId) return;
   const { error } = await supabase.from("generation_jobs").update(updates).eq("id", jobId);
   if (!error) return;
@@ -258,12 +323,12 @@ async function updateJob(supabase: any, jobId: string | undefined, updates: JobU
 // § 7 JSON PARSING
 // Estrae JSON anche da risposte malformate. Partial recovery incluso.
 // ═══════════════════════════════════════════════════════════════════════════════
-function extractJsonFromText(text: string): any {
+function extractJsonFromText(text: string): ParsedCollection {
   let cleaned = text
     .replace(/```json\s*/gi, "")
     .replace(/```\s*/g, "")
     .trim();
-  const start = cleaned.search(/[\{\[]/);
+  const start = cleaned.search(/[[{]/);
   if (start === -1) throw new Error("No JSON found");
   const isArray = cleaned[start] === "[";
   const end = cleaned.lastIndexOf(isArray ? "]" : "}");
@@ -272,11 +337,11 @@ function extractJsonFromText(text: string): any {
   try {
     return JSON.parse(cleaned);
   } catch {}
-  const basic = cleaned
-    .replace(/,\s*}/g, "}")
-    .replace(/,\s*]/g, "]")
-    .replace(/[\x00-\x1F\x7F]/g, "")
-    .replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+  const basic = stripControlCharacters(
+    cleaned
+      .replace(/,\s*}/g, "}")
+      .replace(/,\s*]/g, "]"),
+  ).replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
   try {
     return JSON.parse(basic);
   } catch {}
@@ -286,7 +351,7 @@ function extractJsonFromText(text: string): any {
   const titleMatch = cleaned.match(/"title"\s*:\s*"([^"]+)"/);
   const arrayStart = cleaned.indexOf("[");
   if (arrayStart === -1) throw new Error("Cannot recover JSON");
-  const items: any[] = [];
+  const items: JsonRecord[] = [];
   let depth = 0,
     objStart = -1;
   const arr = cleaned.substring(arrayStart + 1);
@@ -307,7 +372,7 @@ function extractJsonFromText(text: string): any {
   }
   if (items.length > 0) {
     console.log(`Partial JSON recovery: ${items.length} items`);
-    const r: any = {};
+    const r: ParsedCollection = {};
     if (titleMatch) r.title = titleMatch[1];
     r[collectionKey] = items;
     return r;
@@ -320,7 +385,7 @@ function extractJsonFromText(text: string): any {
 // balanceCorrectAnswers: distribuisce A/B/C/D uniformemente nel quiz.
 // deduplicateItems: rimuove domande/card semanticamente duplicate.
 // ═══════════════════════════════════════════════════════════════════════════════
-function balanceCorrectAnswers(rows: any[]): any[] {
+function balanceCorrectAnswers(rows: QuizQuestionGen[]): QuizQuestionGen[] {
   if (rows.length <= 1) return rows;
   const counts = [0, 0, 0, 0];
   const maxPerSlot = Math.ceil(rows.length / 4) + 1;
@@ -355,7 +420,7 @@ function balanceCorrectAnswers(rows: any[]): any[] {
   return rows;
 }
 
-function deduplicateItems<T extends Record<string, any>>(items: T[], key: string): T[] {
+function deduplicateItems<T extends Record<string, unknown>>(items: T[], key: string): T[] {
   const seen = new Set<string>();
   const stop = new Set([
     "il",
@@ -487,8 +552,8 @@ async function extractTopicOutline(apiKey: string, text: string, language: strin
         return topics.slice(0, 20);
       }
     }
-  } catch (e: any) {
-    console.warn("Topic outline failed:", e.message);
+  } catch (e: unknown) {
+    console.warn("Topic outline failed:", getErrorMessage(e, "Errore sconosciuto"));
   }
   return [];
 }
@@ -509,7 +574,7 @@ function topicOverlap(a: string, b: string) {
   return union > 0 ? shared / union : 0;
 }
 
-function consolidateTopics<T extends Record<string, any>>(items: T[], outline: string[] = [], max = 18): T[] {
+function consolidateTopics<T extends Record<string, unknown> & { topic?: string }>(items: T[], outline: string[] = [], max = 18): T[] {
   if (!items.length) return items;
   if (outline.length > 0) {
     items = items.map((item: T) => {
@@ -644,7 +709,8 @@ serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
 
-    const canRunAsync = typeof (globalThis as any).EdgeRuntime?.waitUntil === "function";
+    const edgeRuntime = globalThis as typeof globalThis & { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } };
+    const canRunAsync = typeof edgeRuntime.EdgeRuntime?.waitUntil === "function";
     const shouldRunAsync = Boolean(jobId) && !hasImages && !internalRun && canRunAsync && (asyncMode === true || cleanedLen >= ASYNC_MODE_THRESHOLD);
 
     if (shouldRunAsync) {
@@ -655,7 +721,7 @@ serve(async (req) => {
         error: null,
       });
 
-      (globalThis as any).EdgeRuntime.waitUntil((async () => {
+      edgeRuntime.EdgeRuntime?.waitUntil?.((async () => {
         try {
           const response = await fetch(`${supabaseUrl}/functions/v1/generate-study-content`, {
             method: "POST",
@@ -685,10 +751,10 @@ serve(async (req) => {
               completed_at: new Date().toISOString(),
             });
           }
-        } catch (err: any) {
+        } catch (err: unknown) {
           await updateJob(supabase, jobId, {
             status: "error",
-            error: err?.message || "Errore in background",
+            error: getErrorMessage(err, "Errore in background"),
             completed_at: new Date().toISOString(),
           });
         }
@@ -713,7 +779,7 @@ serve(async (req) => {
       const prompt = isQuiz
         ? `Analizza le immagini e genera ${N} domande a risposta multipla.\nREGOLE: Solo contenuto effettivamente visibile. IGNORA: numeri pagina, intestazioni, URL, bibliografie.\n4 opzioni. correct_answer 0-3. explanation max 120 chars. topic max 4 parole.\nMix: facile 10pts/15s, medio 20pts/30s, difficile 30pts/45s.${type === "quiz_gamified" ? " ADHD: domande brevi, dirette." : ""}\n${cleanedContent ? `\nTesto extra:\n${cleanedContent.substring(0, 12000)}` : ""}\nOutput: {"title":"...","questions":[{"question":"...","options":["A","B","C","D"],"correct_answer":0,"explanation":"...","topic":"...","points":10,"time_limit_seconds":30}]}\n${lang} ESATTAMENTE ${N} domande. SOLO JSON.`
         : `Analizza le immagini e genera ${N} flashcard.\nREGOLE: Solo contenuto effettivamente visibile. IGNORA: numeri pagina, intestazioni, URL, bibliografie.\nfront max 110 chars. back max 190 chars. topic max 4 parole. difficulty easy/medium/hard.\n${cleanedContent ? `\nTesto extra:\n${cleanedContent.substring(0, 12000)}` : ""}\nOutput: {"title":"...","cards":[{"front":"...","back":"...","topic":"...","difficulty":"medium"}]}\n${lang} ESATTAMENTE ${N} flashcard. SOLO JSON.`;
-      const parts: any[] = [{ type: "text", text: prompt }];
+      const parts: ChatVisionPart[] = [{ type: "text", text: prompt }];
       for (const url of images) parts.push({ type: "image_url", image_url: { url } });
       const aiData = await callAI(
         GEMINI_API_KEY,
@@ -732,7 +798,7 @@ serve(async (req) => {
       if (isQuiz) {
         const finalQ = deduplicateItems(parsed.questions || [], "question");
         if (!finalQ.length) throw new Error("Nessuna domanda generata.");
-        const topics = [...new Set(finalQ.map((q: any) => q.topic).filter(Boolean))];
+        const topics = [...new Set(finalQ.map((q) => q.topic).filter(Boolean))];
         const { data: quiz, error: qErr } = await supabase
           .from("quizzes")
           .insert({
@@ -746,7 +812,7 @@ serve(async (req) => {
           .select("id")
           .single();
         if (qErr) throw qErr;
-        const rows = finalQ.map((q: any, i: number) => {
+        const rows = finalQ.map((q, i: number) => {
           const opts = [...(q.options || [])];
           const ct = opts[q.correct_answer ?? 0];
           for (let j = opts.length - 1; j > 0; j--) {
@@ -772,7 +838,7 @@ serve(async (req) => {
       } else {
         const finalC = deduplicateItems(parsed.cards || [], "front");
         if (!finalC.length) throw new Error("Nessuna flashcard generata.");
-        const topics = [...new Set(finalC.map((c: any) => c.topic).filter(Boolean))];
+        const topics = [...new Set(finalC.map((c) => c.topic).filter(Boolean))];
         const { data: deck, error: dErr } = await supabase
           .from("flashcard_decks")
           .insert({
@@ -786,7 +852,7 @@ serve(async (req) => {
           .single();
         if (dErr) throw dErr;
         await supabase.from("flashcards").insert(
-          finalC.map((c: any, i: number) => ({
+          finalC.map((c, i: number) => ({
             deck_id: deck.id,
             front: c.front,
             back: c.back,
@@ -858,8 +924,8 @@ serve(async (req) => {
     const nChunks = Math.min(allChunks.length, MAX_CHUNKS);
     const chunks = allChunks.slice(0, nChunks);
     const startTime = Date.now();
-    const allQuestions: any[] = [];
-    const allCards: any[] = [];
+    const allQuestions: QuizQuestionGen[] = [];
+    const allCards: FlashcardGen[] = [];
     let generatedTitle = title || "Studio";
     let completedCount = 0;
     console.log(`Chunks: ${allChunks.length} total → processing ${nChunks} at concurrency ${CONCURRENCY}`);
@@ -899,8 +965,8 @@ serve(async (req) => {
           console.log(`Chunk ${chunkNum}/${nChunks}: +${qs.length} questions`);
           return { chunkNum, title: chunkTitle, questions: qs, cards: [] };
         }
-      } catch (err: any) {
-        const msg = err.message || String(err);
+      } catch (err: unknown) {
+        const msg = getErrorMessage(err, String(err));
         console.error(`Chunk ${chunkNum} failed:`, msg);
         // Salva il messaggio di errore reale per poterlo surfacciare se TUTTI i chunk falliscono
         return { chunkNum, title: null, questions: [], cards: [], error: msg };
@@ -939,7 +1005,7 @@ serve(async (req) => {
       if (r.title && generatedTitle === (title || "Studio")) generatedTitle = r.title;
       allQuestions.push(...r.questions);
       allCards.push(...r.cards);
-      if ((r as any).error) chunkErrors.push(`chunk ${r.chunkNum}: ${(r as any).error}`);
+      if (r.error) chunkErrors.push(`chunk ${r.chunkNum}: ${r.error}`);
     }
     const elapsed = Math.round((Date.now() - startTime) / 1000);
     console.log(
@@ -962,7 +1028,7 @@ serve(async (req) => {
         const detail = chunkErrors.length > 0 ? ` Dettaglio: ${chunkErrors[0]}` : "";
         throw new Error(`Nessuna domanda generata.${detail} Riprova.`);
       }
-      const topics = [...new Set(finalQ.map((q: any) => q.topic).filter(Boolean))];
+      const topics = [...new Set(finalQ.map((q) => q.topic).filter(Boolean))];
       const { data: quiz, error: qErr } = await supabase
         .from("quizzes")
         .insert({
@@ -976,7 +1042,7 @@ serve(async (req) => {
         .select("id")
         .single();
       if (qErr) throw qErr;
-      const rows = finalQ.map((q: any, i: number) => {
+      const rows = finalQ.map((q, i: number) => {
         const opts = [...(q.options || [])];
         const ct = opts[typeof q.correct_answer === "number" ? q.correct_answer : 0];
         for (let j = opts.length - 1; j > 0; j--) {
@@ -1009,7 +1075,7 @@ serve(async (req) => {
         const detail = chunkErrors.length > 0 ? ` Dettaglio: ${chunkErrors[0]}` : "";
         throw new Error(`Nessuna flashcard generata.${detail} Riprova.`);
       }
-      const topics = [...new Set(finalC.map((c: any) => c.topic).filter(Boolean))];
+      const topics = [...new Set(finalC.map((c) => c.topic).filter(Boolean))];
       const { data: deck, error: dErr } = await supabase
         .from("flashcard_decks")
         .insert({
@@ -1022,7 +1088,7 @@ serve(async (req) => {
         .select("id")
         .single();
       if (dErr) throw dErr;
-      const rows = finalC.map((c: any, i: number) => ({
+      const rows = finalC.map((c, i: number) => ({
         deck_id: deck.id,
         front: c.front,
         back: c.back,
@@ -1071,7 +1137,8 @@ serve(async (req) => {
     );
 
     // ── § 16 ERROR HANDLER ───────────────────────────────────────────────────────
-  } catch (e: any) {
+  } catch (e: unknown) {
+    const errorWithStatus = e as ErrorWithStatus;
     console.error("generate-study-content error:", e);
     try {
       const body = await req
@@ -1082,13 +1149,13 @@ serve(async (req) => {
         const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
         await updateJob(sb, body.jobId, {
           status: "error",
-          error: e.message || "Errore sconosciuto",
+          error: getErrorMessage(e, "Errore sconosciuto"),
           completed_at: new Date().toISOString(),
         });
       }
     } catch {}
-    return new Response(JSON.stringify({ error: e.message || "Unknown error" }), {
-      status: e.status || 500,
+    return new Response(JSON.stringify({ error: getErrorMessage(e, "Unknown error") }), {
+      status: errorWithStatus.status || 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }

@@ -7,6 +7,20 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+interface TaskItem {
+  title: string;
+  description?: string | null;
+  estimated_minutes?: number;
+  priority?: string;
+}
+
+interface ErrorWithStatus {
+  status?: number;
+}
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
@@ -117,7 +131,7 @@ ${textPreview}
 
     const aiData  = await res.json();
     const toolCall = aiData.choices?.[0]?.message?.tool_calls?.[0];
-    let tasks: any[] = [];
+    let tasks: TaskItem[] = [];
 
     if (toolCall?.function?.arguments) {
       tasks = JSON.parse(toolCall.function.arguments).tasks || [];
@@ -135,11 +149,11 @@ ${textPreview}
       title:             `📚 ${title || "Studio"} — Piano micro-task`,
       description:       `${tasks.length} micro-obiettivi · distrazione ${distractionLevel}/5`,
       priority:          "high",
-      estimated_minutes: Math.round(tasks.reduce((s: number, t: any) => s + (t.estimated_minutes || 10), 0) * parseFloat(bufferMult)),
+      estimated_minutes: Math.round(tasks.reduce((s: number, t) => s + (t.estimated_minutes || 10), 0) * parseFloat(bufferMult)),
     }).select("id").single();
     if (parentErr) throw parentErr;
 
-    const childRows = tasks.map((t: any) => ({
+    const childRows = tasks.map((t) => ({
       user_id:           user.id,
       title:             t.title,
       description:       t.description || null,
@@ -160,10 +174,11 @@ ${textPreview}
       total_estimated_minutes: childRows.reduce((s, t) => s + (t.estimated_minutes || 10), 0),
     }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-  } catch (e: any) {
+  } catch (e: unknown) {
+    const errorWithStatus = e as ErrorWithStatus;
     console.error("decompose-tasks error:", e);
-    return new Response(JSON.stringify({ error: e.message || "Unknown error" }), {
-      status: e.status || 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({ error: getErrorMessage(e, "Unknown error") }), {
+      status: errorWithStatus.status || 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import { motion } from "framer-motion";
 import { useSubscription } from "@/hooks/useSubscription";
 import { useToast } from "@/hooks/use-toast";
+import { escapeHtml, SAFE_MARKDOWN_COMPONENTS, sanitizeFilename } from "@/lib/security";
 
 interface SummaryViewerProps {
   content: string;
@@ -20,7 +21,8 @@ const FORMAT_LABELS = {
 };
 
 function markdownToHtml(md: string): string {
-  return md
+  const safeMd = escapeHtml(md);
+  return safeMd
     .replace(/^### (.+)$/gm, '<h3 style="margin:16px 0 6px;font-size:14px;font-weight:700;color:#111;">$1</h3>')
     .replace(/^## (.+)$/gm,  '<h2 style="margin:22px 0 8px;font-size:16px;font-weight:700;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">$1</h2>')
     .replace(/^# (.+)$/gm,   '<h1 style="margin:0 0 16px;font-size:20px;font-weight:800;">$1</h1>')
@@ -49,7 +51,7 @@ const SummaryViewer = ({ content, format, title, onBack }: SummaryViewerProps) =
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
     a.href     = url;
-    a.download = `${title.replace(/[^a-zA-Z0-9]/g, "_")}_${format}.md`;
+    a.download = `${sanitizeFilename(title)}_${format}.md`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -61,14 +63,15 @@ const SummaryViewer = ({ content, format, title, onBack }: SummaryViewerProps) =
     }
 
     const htmlContent = markdownToHtml(content);
-    const printWindow = window.open("", "_blank");
+    const printWindow = window.open("about:blank", "_blank", "noopener,noreferrer");
     if (!printWindow) { toast({ title: "Popup bloccato", description: "Consenti i popup per esportare in PDF.", variant: "destructive" }); return; }
+    printWindow.opener = null;
 
     printWindow.document.write(`<!DOCTYPE html>
 <html lang="it">
 <head>
   <meta charset="UTF-8">
-  <title>${title}</title>
+  <title>${escapeHtml(title)}</title>
   <style>
     * { box-sizing: border-box; }
     body { font-family: Georgia, serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.7; font-size: 14px; }
@@ -84,7 +87,7 @@ const SummaryViewer = ({ content, format, title, onBack }: SummaryViewerProps) =
   </style>
 </head>
 <body>
-  <h1>${title}</h1>
+  <h1>${escapeHtml(title)}</h1>
   <p class="meta">Generato con FocusED · ${new Date().toLocaleDateString("it-IT", { day: "numeric", month: "long", year: "numeric" })}</p>
   ${htmlContent}
 </body>
@@ -130,7 +133,7 @@ const SummaryViewer = ({ content, format, title, onBack }: SummaryViewerProps) =
       </div>
 
       <div className="bg-card rounded-xl border border-border shadow-card p-6 md:p-8 prose prose-sm dark:prose-invert max-w-none">
-        <ReactMarkdown>{content}</ReactMarkdown>
+        <ReactMarkdown components={SAFE_MARKDOWN_COMPONENTS}>{content}</ReactMarkdown>
       </div>
     </motion.div>
   );

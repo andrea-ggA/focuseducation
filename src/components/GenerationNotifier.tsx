@@ -6,10 +6,17 @@ import { Loader2, X, XCircle } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import {
+  ACTIVE_GENERATION_JOB_STATUSES,
+  GENERATION_JOB_STATUS,
+  GenerationJobStatus,
+  isActiveGenerationJobStatus,
+  normalizeGenerationJobStatus,
+} from "@/lib/generationJobState";
 
 interface Job {
   id:               string;
-  status:           string;
+  status:           GenerationJobStatus | string;
   content_type:     string;
   title:            string | null;
   total_items:      number | null;
@@ -72,7 +79,7 @@ const GenerationNotifier = () => {
       .from("generation_jobs")
       .select("*")
       .eq("user_id", user.id)
-      .in("status", ["pending", "processing"])
+      .in("status", [...ACTIVE_GENERATION_JOB_STATUSES])
       .order("created_at", { ascending: false })
       .then(({ data }) => {
         const jobs = (data ?? []) as unknown as Job[];
@@ -84,7 +91,7 @@ const GenerationNotifier = () => {
 
         for (const j of jobs) {
           const ageMs = now - new Date(j.created_at).getTime();
-          if (ageMs > STALE_MINUTES * 60 * 1000) {
+          if (ageMs > STALE_MINUTES * 60 * 1000 && isActiveGenerationJobStatus(j.status)) {
             stale.push(j.id);
           } else if (!dismissedRef.current.has(j.id)) {
             fresh.push(j);
@@ -94,10 +101,12 @@ const GenerationNotifier = () => {
         // Marca i job zombie come errore in modo silenzioso
         if (stale.length > 0) {
           supabase.from("generation_jobs").update({
-            status: "error",
+            status: GENERATION_JOB_STATUS.ERROR,
             error: "Generazione interrotta (timeout o riavvio pagina)",
             completed_at: new Date().toISOString(),
-          }).in("id", stale).then(() => {});
+          }).in("id", stale).then(({ error }) => {
+            if (error) console.error("[GenerationNotifier] Failed to cleanup stale jobs:", error);
+          });
         }
 
         setActiveJobs(fresh);
@@ -113,12 +122,18 @@ const GenerationNotifier = () => {
           const job    = payload.new as Job | undefined;
           const oldJob = payload.old as Job | undefined;
 
+          // Se riceviamo un update per un job che era dismissed, ignoriamolo
+          if (job && dismissedRef.current.has(job.id)) return;
+
           if (!job) {
             if (oldJob?.id) setActiveJobs((p) => p.filter((j) => j.id !== oldJob.id));
             return;
           }
 
-          if (job.status === "completed") {
+          const status = normalizeGenerationJobStatus(job.status);
+          if (!status) return;
+
+          if (status === GENERATION_JOB_STATUS.COMPLETED) {
             setActiveJobs((p) => p.filter((j) => j.id !== job.id));
             const label = TYPE_LABELS[job.content_type] || job.content_type;
             toast({
@@ -132,26 +147,28 @@ const GenerationNotifier = () => {
             return;
           }
 
-          if (job.status === "error") {
+          if (status === GENERATION_JOB_STATUS.ERROR) {
             setActiveJobs((p) => p.filter((j) => j.id !== job.id));
             toast({ title: "Generazione fallita", description: job.error || "Si è verificato un errore.", variant: "destructive" });
             return;
           }
 
-          if (job.status === "cancelled") {
+          if (status === GENERATION_JOB_STATUS.CANCELLED) {
             setActiveJobs((p) => p.filter((j) => j.id !== job.id));
             return;
           }
 
-          // pending / processing: upsert
-          if (!dismissedRef.current.has(job.id)) {
-            setActiveJobs((prev) => {
-              const exists = prev.some((j) => j.id === job.id);
-              return exists
-                ? prev.map((j) => (j.id === job.id ? { ...j, ...job } : j))
-                : [job, ...prev];
-            });
+          if (!isActiveGenerationJobStatus(status)) {
+            return;
           }
+
+          // pending / processing: upsert
+          setActiveJobs((prev) => {
+            const exists = prev.some((j) => j.id === job.id);
+            return exists
+              ? prev.map((j) => (j.id === job.id ? { ...j, ...job, status } : j))
+              : [{ ...job, status }, ...prev];
+          });
         },
       )
       .subscribe();
@@ -162,8 +179,13 @@ const GenerationNotifier = () => {
   const cancelJob = async (jobId: string) => {
     await supabase
       .from("generation_jobs")
-      .update({ status: "cancelled", error: "Annullato dall'utente", completed_at: new Date().toISOString() })
-      .eq("id", jobId);
+      .update({
+        status: GENERATION_JOB_STATUS.CANCELLED,
+        error: "Annullato dall'utente",
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", jobId)
+      .in("status", [...ACTIVE_GENERATION_JOB_STATUSES]);
     toast({ title: "Generazione annullata" });
   };
 
@@ -181,6 +203,7 @@ const GenerationNotifier = () => {
     <div className="fixed bottom-4 right-4 z-50 space-y-2">
       <AnimatePresence>
         {activeJobs.map((job) => {
+          const status = normalizeGenerationJobStatus(job.status) ?? GENERATION_JOB_STATUS.PROCESSING;
           const progress = parseProgress(job.progress_message ?? null, job.error);
           const progressPct = Math.max(
             0,
@@ -196,6 +219,8 @@ const GenerationNotifier = () => {
           const hasDeterminateProgress = typeof job.progress_pct === "number" || !!progress;
           const statusLabel = progress
             ? `Analisi sezione ${progress.section} di ${progress.total}...`
+            : status === GENERATION_JOB_STATUS.PENDING
+              ? "Preparazione generazione..."
             : job.progress_message || `Generando ${TYPE_LABELS[job.content_type] || job.content_type}...`;
 
           return (

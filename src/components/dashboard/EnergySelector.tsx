@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { motion } from "framer-motion";
 import { Battery, Scale, Flame } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 export type EnergyLevel = "low" | "balanced" | "hyperfocus";
 
@@ -37,14 +38,30 @@ const LEVELS: { id: EnergyLevel; label: string; emoji: string; description: stri
 
 const EnergySelector = ({ value, onChange }: EnergySelectorProps) => {
   const { user } = useAuth();
+  const { toast } = useToast();
+  const [saving, setSaving] = useState(false);
 
   const handleChange = async (level: EnergyLevel) => {
+    if (saving || level === value) return;
+    const previousLevel = value;
     onChange(level);
-    if (user) {
-      await supabase
+    if (!user) return;
+    setSaving(true);
+    try {
+      const { error } = await supabase
         .from("profiles")
-        .update({ energy_level: level } as any)
+        .update({ energy_level: level })
         .eq("user_id", user.id);
+      if (error) throw error;
+    } catch (error) {
+      onChange(previousLevel);
+      toast({
+        title: "Salvataggio non riuscito",
+        description: "Il tuo stato energia non è stato aggiornato. Riprova.",
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -63,6 +80,7 @@ const EnergySelector = ({ value, onChange }: EnergySelectorProps) => {
             <button
               key={level.id}
               onClick={() => handleChange(level.id)}
+              disabled={saving}
               className={`relative rounded-xl border p-3 text-center transition-all ${
                 isActive
                   ? "border-primary bg-primary/10 shadow-soft"

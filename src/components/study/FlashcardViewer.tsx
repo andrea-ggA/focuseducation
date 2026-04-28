@@ -6,6 +6,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { sm2, isDueForReview, QUALITY_OPTIONS } from "@/lib/spacedRepetition";
+import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/hooks/use-toast";
+import { awardUserXp, recordFlashcardReview } from "@/lib/progression";
 
 interface Flashcard {
   id:               string;
@@ -26,6 +29,8 @@ interface FlashcardViewerProps {
 }
 
 const FlashcardViewer = ({ deckId, selectedTopics, reviewMode, onBack }: FlashcardViewerProps) => {
+  const { user } = useAuth();
+  const { toast } = useToast();
   const [cards, setCards] = useState<Flashcard[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [flipped, setFlipped] = useState(false);
@@ -34,24 +39,59 @@ const FlashcardViewer = ({ deckId, selectedTopics, reviewMode, onBack }: Flashca
   const [stats, setStats] = useState({ easy: 0, good: 0, hard: 0, again: 0 });
   const [speaking, setSpeaking] = useState(false);
 
-  // Web Speech API — gratuita, funziona su tutti i browser moderni incluso Safari iOS
+  const [xpAwarded, setXpAwarded] = useState(false);
+
+  useEffect(() => {
+    setXpAwarded(false);
+  }, [deckId, selectedTopics, reviewMode]);
+
+  // Award XP once when the session is completed
+  useEffect(() => {
+    if (currentIndex >= cards.length && cards.length > 0 && !xpAwarded && user) {
+      const awardXp = async () => {
+        const amount = Math.min(50, cards.length * 2); // 2 XP per card, max 50
+        await awardUserXp({
+          userId: user.id,
+          amount,
+          source: "flashcard_session",
+          sourceId: deckId,
+          dedupeBySourceId: true,
+        });
+        
+        setXpAwarded(true);
+        toast({ title: `+${amount} XP! ✨`, description: "Sessione flashcard completata!" });
+      };
+      awardXp();
+    }
+  }, [currentIndex, cards.length, xpAwarded, user, deckId, toast]);
+
+  // Web Speech API — migliorata euristica lingua
   const speak = useCallback((text: string) => {
     if (!window.speechSynthesis) return;
-    window.speechSynthesis.cancel(); // stop any current speech
-    if (speaking) { setSpeaking(false); return; } // toggle off
+    window.speechSynthesis.cancel();
+    if (speaking) { setSpeaking(false); return; }
 
     const utterance = new SpeechSynthesisUtterance(text);
-    // Auto-detect language from card content (basic heuristic)
-    const hasLatinChars = /[a-zA-Zàèéìòùáéíóúâêîôûäëïöü]/.test(text);
-    utterance.lang = hasLatinChars ? "it-IT" : "en-US";
-    utterance.rate = 0.9;
+    
+    // Euristica più robusta: se contiene molte parole comuni inglesi o pattern specifici
+    const englishPatterns = /\b(the|is|are|was|were|will|be|of|and|to|in|it|that|for|with|as|on)\b/i;
+    const isEnglish = englishPatterns.test(text);
+    
+    utterance.lang = isEnglish ? "en-US" : "it-IT";
+    utterance.rate = 0.95;
     utterance.onend = () => setSpeaking(false);
     utterance.onerror = () => setSpeaking(false);
     setSpeaking(true);
     window.speechSynthesis.speak(utterance);
   }, [speaking]);
 
-  // Stop speech when card changes
+  // Stop speech when card changes o unmount
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis?.cancel();
+    };
+  }, []);
+
   useEffect(() => {
     window.speechSynthesis?.cancel();
     setSpeaking(false);
@@ -84,15 +124,15 @@ const FlashcardViewer = ({ deckId, selectedTopics, reviewMode, onBack }: Flashca
       setLoading(false);
     };
     fetch();
-  }, [deckId]);
+  }, [deckId, reviewMode, selectedTopics]);
 
   const rateCard = async (quality: number) => {
+    if (!user || currentIndex >= cards.length) return;
     const card   = cards[currentIndex];
     const result = sm2(
       quality,
       card.mastery_level,
       card.easiness_factor ?? 2.5,  // pass persisted EF
-      card.next_review_at ? new Date(card.next_review_at) : null,
     );
 
     setCards((prev) =>
@@ -114,16 +154,17 @@ const FlashcardViewer = ({ deckId, selectedTopics, reviewMode, onBack }: Flashca
     else                    setStats((s) => ({ ...s, again: s.again + 1 }));
 
     // FIX: persist to DB — if it fails, revert the state update to stay consistent
-    const { error: dbError } = await supabase
-      .from("flashcards")
-      .update({
-        mastery_level:   result.newMasteryLevel,
-        easiness_factor: result.newEasinessFactor,
-        next_review_at:  result.nextReviewAt.toISOString(),
-      })
-      .eq("id", card.id);
-
-    if (dbError) {
+    try {
+      await recordFlashcardReview({
+        userId: user.id,
+        cardId: card.id,
+        deckId: deckId,
+        quality,
+        masteryLevel: result.newMasteryLevel,
+        easinessFactor: result.newEasinessFactor,
+        nextReviewAt: result.nextReviewAt,
+      });
+    } catch (dbError) {
       console.error("[FlashcardViewer] Failed to persist review:", dbError);
       // Revert state to previous values to keep UI consistent with DB
       setCards((prev) =>
@@ -133,6 +174,7 @@ const FlashcardViewer = ({ deckId, selectedTopics, reviewMode, onBack }: Flashca
             : c
         )
       );
+      return;
     }
 
     // Next card
@@ -208,6 +250,8 @@ const FlashcardViewer = ({ deckId, selectedTopics, reviewMode, onBack }: Flashca
 
   // Mastery indicator
   const masteryLabels = ["Nuova", "Apprendimento", "Ripasso", "Buona", "Ottima", "Padroneggiata"];
+  const safeMasteryLevel = Math.max(0, Math.min(card.mastery_level || 0, masteryLabels.length - 1));
+  
   const masteryColors = [
     "bg-muted text-muted-foreground",
     "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
@@ -227,8 +271,8 @@ const FlashcardViewer = ({ deckId, selectedTopics, reviewMode, onBack }: Flashca
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Badge className={`text-[10px] ${masteryColors[card.mastery_level] || masteryColors[0]}`} variant="secondary">
-            {masteryLabels[card.mastery_level] || masteryLabels[0]}
+          <Badge className={`text-[10px] ${masteryColors[safeMasteryLevel]}`} variant="secondary">
+            {masteryLabels[safeMasteryLevel]}
           </Badge>
           {card.next_review_at && (
             <span className="text-[10px] text-muted-foreground flex items-center gap-1">

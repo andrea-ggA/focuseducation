@@ -55,6 +55,9 @@ interface GenerationJob {
   created_at: string;
 }
 
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 interface StudyHistoryProps {
   onPlayQuiz: (quizId: string, gamified: boolean) => void;
   onViewDeck: (deckId: string) => void;
@@ -134,7 +137,11 @@ const StudyHistory = ({ onPlayQuiz, onViewDeck, refreshKey }: StudyHistoryProps)
 
       await supabase.from("generated_content").delete().eq("document_id", docId);
       await supabase.from("generation_jobs").delete().eq("document_id", docId);
-      await supabase.from("tasks").delete().eq("parent_task_id", docId);
+      
+      // I task non hanno document_id ma sono linkati ai materiali (quiz/deck). 
+      // L'eliminazione a cascata dal DB dovrebbe gestire i record figli se configurata,
+      // altrimenti i task rimangono orfani (comportamento attuale sicuro).
+      
       await supabase.from("documents").delete().eq("id", docId);
 
       // FIX: rimuovi il file da Supabase Storage
@@ -147,8 +154,12 @@ const StudyHistory = ({ onPlayQuiz, onViewDeck, refreshKey }: StudyHistoryProps)
 
       setDocuments((prev) => prev.filter((d) => d.id !== docId));
       toast({ title: "Documento e materiali associati eliminati" });
-    } catch (err: any) {
-      toast({ title: "Errore durante l'eliminazione", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({
+        title: "Errore durante l'eliminazione",
+        description: getErrorMessage(err, "Eliminazione non riuscita."),
+        variant: "destructive",
+      });
     } finally {
       setDeletingIds((prev) => { const n = new Set(prev); n.delete(docId); return n; });
     }

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { motion } from "framer-motion";
 import { BookOpen, ChevronLeft, ChevronRight, Sparkles, RotateCcw } from "lucide-react";
+import { isSafeShareToken } from "@/lib/security";
 
 interface Flashcard {
   id: string;
@@ -25,7 +26,11 @@ const SharedFlashcards = () => {
   const [creatorName, setCreatorName] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token) return;
+    if (!isSafeShareToken(token)) {
+      setNotFound(true);
+      setLoading(false);
+      return;
+    }
     const fetch = async () => {
       const { data: deck } = await supabase
         .from("flashcard_decks")

@@ -26,6 +26,12 @@ interface ChallengeProgress {
   reward_claimed: boolean;
 }
 
+interface ClaimWeeklyChallengeResult {
+  success?: boolean;
+  error?: string;
+  xp_awarded?: number;
+}
+
 const WeeklyChallenges = () => {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -137,7 +143,7 @@ const WeeklyChallenges = () => {
     if (challenges.length > 0) {
       syncProgress();
     }
-  }, [challenges.length]);
+  }, [challenges, syncProgress]);
 
   // Countdown timer
   useEffect(() => {
@@ -168,11 +174,11 @@ const WeeklyChallenges = () => {
     if (!progress?.completed || progress.reward_claimed) return;
 
     // FIX: claim atomico server-side — previene double-claim e verifica condizioni
-    const { data, error } = await supabase.rpc("claim_weekly_challenge" as any, {
+    const { data, error } = await supabase.rpc("claim_weekly_challenge", {
       _user_id:      user.id,
       _challenge_id: challenge.id,
     });
-    const result = data as any;
+    const result = data as ClaimWeeklyChallengeResult | null;
 
     if (error || !result?.success) {
       const msg = result?.error === "already_claimed" ? "Premio già riscosso"

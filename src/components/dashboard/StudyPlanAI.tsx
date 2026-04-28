@@ -45,6 +45,10 @@ interface StudyPlan {
   days: DayPlan[];
 }
 
+interface EnergyProfileRow {
+  energy_level?: string | null;
+}
+
 const PRIORITY_COLORS: Record<string, string> = {
   high: "border-destructive/30 bg-destructive/5",
   medium: "border-primary/30 bg-primary/5",
@@ -61,9 +65,9 @@ const TYPE_ICONS: Record<string, string> = {
 };
 
 interface StudyPlanAIProps {
-  initialPlan?:       any | null;   // piano pre-caricato dal Dashboard (evita doppia fetch)
+  initialPlan?: StudyPlan | null;   // piano pre-caricato dal Dashboard (evita doppia fetch)
   preloaded?:         boolean;      // true = Dashboard ha già tentato il fetch
-  onPlanGenerated?:   (plan: any) => void;
+  onPlanGenerated?: (plan: StudyPlan) => void;
 }
 
 const StudyPlanAI = ({ initialPlan, preloaded = false, onPlanGenerated }: StudyPlanAIProps) => {
@@ -100,7 +104,7 @@ const StudyPlanAI = ({ initialPlan, preloaded = false, onPlanGenerated }: StudyP
       onPlanGenerated?.(p);
     }
     setInitialLoading(false);
-  }, [user]);
+  }, [user, onPlanGenerated]);
 
   // Usa piano pre-caricato dal Dashboard se disponibile
   useEffect(() => {
@@ -145,7 +149,7 @@ const StudyPlanAI = ({ initialPlan, preloaded = false, onPlanGenerated }: StudyP
 
       const { data, error } = await supabase.functions.invoke("generate-study-plan", {
         body: {
-          energy_level: (profile as any)?.energy_level || "balanced",
+          energy_level: (profile as EnergyProfileRow | null)?.energy_level || "balanced",
           language: navigator.language?.split("-")[0] || "it",
         },
       });
@@ -159,11 +163,12 @@ const StudyPlanAI = ({ initialPlan, preloaded = false, onPlanGenerated }: StudyP
         if (user) localStorage.removeItem(`study-plan-done-${user.id}`);
         toast({ title: "📚 Piano generato!", description: "Il tuo piano settimanale è pronto." });
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("Generate plan error:", e);
+      const message = e instanceof Error ? e.message : "Impossibile generare il piano.";
       toast({
         title: "Errore",
-        description: e.message || "Impossibile generare il piano.",
+        description: message,
         variant: "destructive",
       });
     } finally {

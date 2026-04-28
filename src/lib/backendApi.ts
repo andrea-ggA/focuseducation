@@ -20,18 +20,32 @@
  */
 
 import { supabase } from "@/integrations/supabase/client";
+import { isSafeYouTubeUrl } from "@/lib/security";
+
+const DEFAULT_BACKEND_URL = "https://focuseducation-backend-fixed-87505598703.europe-west1.run.app";
+
+function normalizeBackendUrl(raw: string | undefined): string {
+  if (!raw) return DEFAULT_BACKEND_URL;
+  const patched = raw.includes("focuseducation-backend-87505598703")
+    ? DEFAULT_BACKEND_URL
+    : raw;
+
+  try {
+    const parsed = new URL(patched);
+    const isLocalHttp = parsed.protocol === "http:" && /^(localhost|127\.0\.0\.1)$/i.test(parsed.hostname);
+    const isHttps = parsed.protocol === "https:";
+    if (isHttps || isLocalHttp) return parsed.toString().replace(/\/$/, "");
+  } catch {
+    // Fall back to known-safe backend URL below.
+  }
+  return DEFAULT_BACKEND_URL;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // § 1 CONFIG & TIPI
 // BACKEND_URL: Cloud Run. ASYNC_THRESHOLD: sopra questa soglia usa asyncMode.
 // ═══════════════════════════════════════════════════════════════════════════════
-const BACKEND_URL = (() => {
-  const v = import.meta.env.VITE_BACKEND_URL as string | undefined;
-  if (!v) return "https://focuseducation-backend-fixed-87505598703.europe-west1.run.app";
-  return v.includes("focuseducation-backend-87505598703")
-    ? "https://focuseducation-backend-fixed-87505598703.europe-west1.run.app"
-    : v;
-})();
+const BACKEND_URL = normalizeBackendUrl(import.meta.env.VITE_BACKEND_URL as string | undefined);
 
 // Oltre ~30k caratteri la generazione quiz può richiedere diversi minuti.
 // In questi casi usiamo il job in background per evitare che il browser chiuda
@@ -40,8 +54,75 @@ const BACKEND_URL = (() => {
 // File ≤100k → sync (risultato immediato). File >100k → async + GenerationNotifier.
 export const ASYNC_THRESHOLD = 100_000;
 
+type UnknownRecord = Record<string, unknown>;
+
+interface StudyContentResponse {
+  accepted?: boolean;
+  jobId?: string;
+  quiz_id?: string;
+  deck_id?: string;
+  success?: boolean;
+  error?: string;
+}
+
+interface SummaryResponse {
+  content?: string;
+  markdown?: string;
+  result?: {
+    markdown?: string;
+  };
+}
+
+interface MindmapResponse {
+  success?: boolean;
+  nodes?: unknown[];
+  edges?: unknown[];
+}
+
+interface MicroTasksResponse {
+  tasks?: unknown[];
+}
+
+interface QuizQuestionInput {
+  question?: string;
+  options?: string[];
+  correct_answer?: number;
+  explanation?: string | null;
+  topic?: string | null;
+  points?: number;
+  source_reference?: string | null;
+}
+
+interface QuizResultInput {
+  title?: string;
+  topic?: string | null;
+  questions?: QuizQuestionInput[];
+}
+
+interface FlashcardInput {
+  front?: string;
+  back?: string;
+  topic?: string | null;
+  difficulty?: string | null;
+  source_reference?: string | null;
+}
+
+interface FlashcardResultInput {
+  title?: string;
+  topic?: string | null;
+  cards?: FlashcardInput[];
+  flashcards?: FlashcardInput[];
+}
+
+interface MicroTaskInput {
+  title?: string;
+  description?: string | null;
+  estimated_minutes?: number;
+  priority?: string;
+}
+
 export type GenerationResult =
-  | { mode: "sync_edge";  quizId?: string; deckId?: string; summaryId?: string; data?: any }
+  | { mode: "sync_edge";  quizId?: string; deckId?: string; summaryId?: string; data?: unknown }
   | { mode: "async_edge"; jobId: string };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -55,6 +136,9 @@ export async function getAuthToken(): Promise<string> {
 
 function supabaseUrl() { return (import.meta.env.VITE_SUPABASE_URL as string) ?? ""; }
 function anonKey()     { return (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string) ?? ""; }
+function isValidEdgeFunctionName(name: string): boolean {
+  return /^[a-z0-9-]{2,64}$/.test(name);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // § 3 FETCH HELPERS
@@ -68,9 +152,9 @@ async function fetchWithTimeout(url: string, opts: RequestInit, ms: number): Pro
   finally { clearTimeout(timer); }
 }
 
-async function safeJson(res: Response): Promise<any> {
+async function safeJson<T = unknown>(res: Response): Promise<T> {
   const text = await res.text();
-  try { return JSON.parse(text); }
+  try { return JSON.parse(text) as T; }
   catch { throw new Error(`Errore del server (${res.status})`); }
 }
 
@@ -100,11 +184,14 @@ async function parseEdgeResponse<T>(res: Response): Promise<EdgeRequestResult<T>
   }
 }
 
-export async function requestEdgeFunction<T = any>(
+export async function requestEdgeFunction<T = unknown>(
   functionName: string,
   body: unknown,
   timeoutMs = 120_000,
 ): Promise<EdgeRequestResult<T>> {
+  if (!isValidEdgeFunctionName(functionName)) {
+    throw new Error("Nome funzione Edge non valido");
+  }
   const token = await getAuthToken();
   const url = `${supabaseUrl()}/functions/v1/${functionName}`;
 
@@ -122,7 +209,7 @@ export async function requestEdgeFunction<T = any>(
     return await parseEdgeResponse<T>(res);
   } catch (err) {
     if (!isEdgeTransportError(err)) throw err;
-    console.warn(`[backendApi] direct edge call failed for ${functionName}, retrying with sdk invoke`, err);
+    console.warn(`[backendApi] direct edge call failed for ${functionName}, retrying with sdk invoke`);
   }
 
   const { data, error } = await supabase.functions.invoke(functionName, { body });
@@ -131,7 +218,7 @@ export async function requestEdgeFunction<T = any>(
   return { data: (data ?? null) as T | null, rawText: "", status: 200 };
 }
 
-export async function invokeEdgeFunction<T = any>(
+export async function invokeEdgeFunction<T = unknown>(
   functionName: string,
   body: unknown,
   timeoutMs = 120_000,
@@ -142,7 +229,7 @@ export async function invokeEdgeFunction<T = any>(
     return (result.data ?? {}) as T;
   }
 
-  const payload = result.data as Record<string, any> | null;
+  const payload = result.data as UnknownRecord | null;
   throw new Error(payload?.error || payload?.message || result.rawText || `Errore del server (${result.status})`);
 }
 
@@ -155,8 +242,17 @@ export async function streamTutorChat(
   token:           string,
   documentContext?: string | null,
 ): Promise<Response> {
-  const body: any = { messages };
-  if (documentContext) body.documentContext = documentContext;
+  const sanitizedMessages = messages
+    .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+    .map((m) => ({ role: m.role, content: m.content.slice(0, 15_000) }))
+    .slice(-40);
+
+  const body: UnknownRecord = { messages: sanitizedMessages };
+  if (documentContext) {
+    const trimmedDocumentContext = documentContext.slice(0, 80_000);
+    body.documentContext = trimmedDocumentContext;
+    body.ctx = trimmedDocumentContext;
+  }
   try {
     const res = await fetchWithTimeout(`${BACKEND_URL}/ai-tutor`, {
       method:  "POST",
@@ -183,7 +279,10 @@ export async function transcribeAudio(audioFile: File, token: string): Promise<s
     const res = await fetchWithTimeout(`${BACKEND_URL}/voice-to-notes`, {
       method: "POST", headers: { Authorization: `Bearer ${token}` }, body: fd,
     }, 60_000);
-    if (res.ok) { const d = await safeJson(res); return d.notes || ""; }
+    if (res.ok) {
+      const data = await safeJson<{ notes?: string }>(res);
+      return data.notes || "";
+    }
   } catch (e) { console.warn("[backendApi] voice-to-notes fallback:", e); }
   const base64 = await new Promise<string>((ok, err) => {
     const r = new FileReader();
@@ -205,13 +304,16 @@ export async function transcribeAudio(audioFile: File, token: string): Promise<s
 export async function fetchYoutubeTranscript(
   url: string, token: string,
 ): Promise<{ transcript: string; title: string; method: string; notice?: string }> {
+  if (!isSafeYouTubeUrl(url)) {
+    throw new Error("URL YouTube non valido");
+  }
   try {
     const res = await fetchWithTimeout(`${BACKEND_URL}/youtube-transcript`, {
       method:  "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body:    JSON.stringify({ url }),
     }, 90_000);
-    if (res.ok) return await safeJson(res);
+    if (res.ok) return await safeJson<{ transcript: string; title: string; method: string; notice?: string }>(res);
   } catch (e) { console.warn("[backendApi] youtube-transcript fallback:", e); }
   const { data, error } = await supabase.functions.invoke("youtube-transcript", { body: { url } });
   if (error) throw new Error(error.message || "Impossibile trascrivere il video");
@@ -236,7 +338,7 @@ export async function generateQuizOrFlashcards(
   const edgeType = typeMap[type] || type;
 
   if (!isLarge) {
-    const data = await invokeEdgeFunction<any>("generate-study-content", {
+    const data = await invokeEdgeFunction<StudyContentResponse>("generate-study-content", {
       content,
       type: edgeType,
       jobId,
@@ -252,7 +354,7 @@ export async function generateQuizOrFlashcards(
   }
 
   // Async: asyncMode:true + Realtime
-  const data = await invokeEdgeFunction<any>("generate-study-content", {
+  const data = await invokeEdgeFunction<StudyContentResponse>("generate-study-content", {
     content,
     type: edgeType,
     jobId,
@@ -278,7 +380,7 @@ export async function generateQuizOrFlashcardsFromImages(
   title?:        string,
 ): Promise<GenerationResult> {
   const typeMap: Record<string, string> = { quiz:"quiz", flashcards:"flashcards", quiz_gamified:"quiz_gamified" };
-  const data = await invokeEdgeFunction<any>("generate-study-content", {
+  const data = await invokeEdgeFunction<StudyContentResponse>("generate-study-content", {
     images:     imageDataUrls,
     type:       typeMap[type] || type,
     jobId,
@@ -301,9 +403,9 @@ export async function generateSummary(
   content: string,
   images?: string[],
 ): Promise<string> {
-  const body: any = { format, content };
+  const body: UnknownRecord = { format, content };
   if (images && images.length > 0) body.images = images;
-  const data = await invokeEdgeFunction<any>("generate-summary", body, 180_000);
+  const data = await invokeEdgeFunction<SummaryResponse>("generate-summary", body, 180_000);
   const md = data?.content || data?.markdown || data?.result?.markdown || "";
   if (!md) throw new Error("Risposta vuota dal generatore di sommari");
   return md;
@@ -315,8 +417,8 @@ export async function generateSummary(
 // ═══════════════════════════════════════════════════════════════════════════════
 export async function generateMindmap(
   content: string,
-): Promise<{ nodes: any[]; edges: any[] }> {
-  const data = await invokeEdgeFunction<any>("generate-mindmap", { content, text: content }, 120_000);
+): Promise<{ nodes: unknown[]; edges: unknown[] }> {
+  const data = await invokeEdgeFunction<MindmapResponse>("generate-mindmap", { content, text: content }, 120_000);
   if (!data?.success) throw new Error("Generazione mappa fallita");
   return { nodes: data.nodes || [], edges: data.edges || [] };
 }
@@ -327,8 +429,8 @@ export async function generateMindmap(
 // ═══════════════════════════════════════════════════════════════════════════════
 export async function generateMicroTasks(
   content: string,
-): Promise<{ tasks: any[] }> {
-  const data = await invokeEdgeFunction<any>("decompose-tasks", { content }, 120_000);
+): Promise<{ tasks: unknown[] }> {
+  const data = await invokeEdgeFunction<MicroTasksResponse>("decompose-tasks", { content }, 120_000);
   return { tasks: data?.tasks || [] };
 }
 
@@ -337,47 +439,65 @@ export async function generateMicroTasks(
 // Usati solo se i dati RAW arrivano dall'esterno (non da Edge Function).
 // Per quiz/flashcard via Edge Function, l'ID è già salvato — non servono.
 // ═══════════════════════════════════════════════════════════════════════════════
-export async function saveQuizResult(userId: string, data: any, documentId?: string, title?: string): Promise<string> {
-  const qd        = data.quiz || data.result || data;
-  const questions = qd.questions || [];
+export async function saveQuizResult(userId: string, data: UnknownRecord, documentId?: string, title?: string): Promise<string> {
+  const qd = (data.quiz || data.result || data) as QuizResultInput | undefined;
+  if (!qd) throw new Error("Dati quiz mancanti");
+  
+  const questions = Array.isArray(qd.questions) ? qd.questions : [];
+  if (questions.length === 0) throw new Error("Il quiz non contiene domande valide");
+
   const { data: quiz, error } = await supabase.from("quizzes").insert({
     user_id: userId, title: qd.title || title || "Quiz",
     topic: qd.topic || null, total_questions: questions.length,
     quiz_type: "standard", document_id: documentId || null,
   }).select("id").single();
+  
   if (error) throw error;
-  if (questions.length > 0) {
-    const { error: e2 } = await supabase.from("quiz_questions").insert(
-      questions.map((q: any, i: number) => ({
-        quiz_id: quiz.id, question: q.question, options: q.options || [],
-        correct_answer: q.correct_answer ?? 0, explanation: q.explanation || null,
-        topic: q.topic || null, sort_order: i, points: q.points || 10,
-        source_reference: q.source_reference || null,
-      }))
-    );
-    if (e2) throw e2;
+  
+  const { error: e2 } = await supabase.from("quiz_questions").insert(
+    questions.map((q: QuizQuestionInput, i: number) => ({
+      quiz_id: quiz.id, question: q.question || "Domanda senza testo", 
+      options: Array.isArray(q.options) ? q.options : [],
+      correct_answer: typeof q.correct_answer === "number" ? q.correct_answer : 0, 
+      explanation: q.explanation || null,
+      topic: q.topic || null, sort_order: i, points: q.points || 10,
+      source_reference: q.source_reference || null,
+    }))
+  );
+  if (e2) {
+    await supabase.from("quizzes").delete().eq("id", quiz.id); // Cleanup
+    throw e2;
   }
+  
   return quiz.id;
 }
 
-export async function saveFlashcardResult(userId: string, data: any, documentId?: string, title?: string): Promise<string> {
-  const dd    = data.result || data;
-  const cards = dd.cards || dd.flashcards || [];
+export async function saveFlashcardResult(userId: string, data: UnknownRecord, documentId?: string, title?: string): Promise<string> {
+  const dd = (data.result || data) as FlashcardResultInput | undefined;
+  if (!dd) throw new Error("Dati flashcard mancanti");
+
+  const cards = Array.isArray(dd.cards) ? dd.cards : Array.isArray(dd.flashcards) ? dd.flashcards : [];
+  if (cards.length === 0) throw new Error("Il deck non contiene flashcard valide");
+
   const { data: deck, error } = await supabase.from("flashcard_decks").insert({
     user_id: userId, title: dd.title || title || "Flashcard",
     topic: dd.topic || null, card_count: cards.length, document_id: documentId || null,
   }).select("id").single();
+  
   if (error) throw error;
-  if (cards.length > 0) {
-    const { error: e2 } = await supabase.from("flashcards").insert(
-      cards.map((c: any, i: number) => ({
-        deck_id: deck.id, front: c.front, back: c.back,
-        topic: c.topic || null, difficulty: c.difficulty || null,
-        sort_order: i, easiness_factor: 2.5, source_reference: c.source_reference || null,
-      }))
-    );
-    if (e2) throw e2;
+  
+  const { error: e2 } = await supabase.from("flashcards").insert(
+    cards.map((c: FlashcardInput, i: number) => ({
+      deck_id: deck.id, front: c.front || "Fronte vuoto", back: c.back || "Retro vuoto",
+      topic: c.topic || null, difficulty: c.difficulty || null,
+      sort_order: i, easiness_factor: 2.5, source_reference: c.source_reference || null,
+    }))
+  );
+  if (e2) {
+    await supabase.from("flashcard_decks").delete().eq("id", deck.id); // Cleanup
+    throw e2;
   }
+  
   return deck.id;
 }
 
@@ -392,23 +512,23 @@ export async function saveSummaryResult(userId: string, markdown: string, format
   return data.id;
 }
 
-export async function saveMindmapResult(userId: string, nodes: any[], edges: any[], title?: string): Promise<void> {
+export async function saveMindmapResult(userId: string, nodes: unknown[], edges: unknown[], title?: string): Promise<void> {
   await supabase.from("generated_content").insert({
     user_id: userId, content_type: "mindmap",
     title: title || "Mappa concettuale", content: { nodes, edges },
   });
 }
 
-export async function saveMicroTaskResult(userId: string, tasks: any[], title?: string): Promise<{ parentId: string; totalTasks: number }> {
+export async function saveMicroTaskResult(userId: string, tasks: MicroTaskInput[], title?: string): Promise<{ parentId: string; totalTasks: number }> {
   const { data: parent, error } = await supabase.from("tasks").insert({
     user_id: userId, title: `📚 ${title || "Studio"} — Piano micro-task`,
     description: `${tasks.length} micro-obiettivi generati`, priority: "high",
-    estimated_minutes: Math.round(tasks.reduce((s: number, t: any) => s + (t.estimated_minutes || 10), 0)),
+    estimated_minutes: Math.round(tasks.reduce((s: number, t: MicroTaskInput) => s + (t.estimated_minutes || 10), 0)),
   }).select("id").single();
   if (error) throw error;
   if (tasks.length > 0) {
     await supabase.from("tasks").insert(
-      tasks.map((t: any) => ({
+      tasks.map((t: MicroTaskInput) => ({
         user_id: userId, title: t.title, description: t.description || null,
         estimated_minutes: t.estimated_minutes || 10, priority: t.priority || "medium",
         parent_task_id: parent.id,
@@ -423,14 +543,14 @@ export async function saveMicroTaskResult(userId: string, tasks: any[], title?: 
 // generateFromText: alias per retrocompatibilità con componenti vecchi.
 // Non usare per quiz/flashcard: usa generateQuizOrFlashcards().
 // ═══════════════════════════════════════════════════════════════════════════════
-export async function generateFromText(type: string, inputData: string, _token: string): Promise<any> {
+export async function generateFromText(type: string, inputData: string, _token: string): Promise<unknown> {
   if (type === "decompose") return generateMicroTasks(inputData);
   if (type === "mindmap") {
     const { nodes, edges } = await generateMindmap(inputData);
     return { success: true, nodes, edges };
   }
   if (["summary", "outline", "smart_notes"].includes(type)) {
-    const md = await generateSummary(type as any, inputData);
+    const md = await generateSummary(type as "summary" | "outline" | "smart_notes", inputData);
     return { result: { markdown: md }, content: md };
   }
   throw new Error(`generateFromText: tipo '${type}' non supportato. Usa generateQuizOrFlashcards().`);

@@ -9,6 +9,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { sm2, QUALITY_OPTIONS } from "@/lib/spacedRepetition";
 import { useDueCards, type DueCard } from "@/hooks/useDueCards";
+import { recordFlashcardReview } from "@/lib/progression";
 import { playCorrectSound, playWrongSound, playCompletionSound, fireCompletionConfetti } from "@/lib/soundEffects";
 
 interface QuickReviewSessionProps {
@@ -22,45 +23,68 @@ export default function QuickReviewSession({ onClose, onComplete }: QuickReviewS
   const [cards, setCards]                     = useState<DueCard[]>([]);
   const [current, setCurrent]                 = useState(0);
   const [flipped, setFlipped]                 = useState(false);
-  const [loading, setLoading]                 = useState(true);
+  const [loading, setLoading]                 = useState(false);
   const [done, setDone]                       = useState(false);
   const [started, setStarted]                 = useState(false);
   const [deckList, setDeckList]               = useState<{id:string;title:string;card_count:number;topic:string|null}[]>([]);
   const [selectedDeck, setSelectedDeck]       = useState<string>("all");
   const [loadingDecks, setLoadingDecks]       = useState(true);
+  const [loadError, setLoadError]             = useState<string | null>(null);
   const [stats, setStats]                     = useState({ easy: 0, good: 0, hard: 0, again: 0 });
 
   // Load deck list for selector
   useEffect(() => {
     if (!user) return;
+    setLoadingDecks(true);
     supabase.from("flashcard_decks").select("id,title,card_count,topic")
       .eq("user_id", user.id).order("created_at", { ascending: false })
-      .then(({ data }) => { setDeckList(data || []); setLoadingDecks(false); });
+      .then(({ data, error }) => {
+        if (error) throw error;
+        setDeckList(data || []);
+      })
+      .catch((error) => {
+        console.warn("[QuickReviewSession] Failed to load decks:", error);
+        setDeckList([]);
+      })
+      .finally(() => setLoadingDecks(false));
   }, [user]);
 
   // Load cards only after user taps Start
   const startReview = () => {
     setStarted(true);
     setLoading(true);
+    setLoadError(null);
+    setCards([]);
+    setCurrent(0);
+    setFlipped(false);
     loadDueCards(20, selectedDeck !== "all" ? selectedDeck : undefined)
-      .then((c) => { setCards(c); setLoading(false); });
+      .then((c) => setCards(c))
+      .catch((error) => {
+        console.warn("[QuickReviewSession] Failed to load due cards:", error);
+        setLoadError("Non riesco a caricare le carte ora. Riprova tra qualche secondo.");
+      })
+      .finally(() => setLoading(false));
   };
 
   const rateCard = useCallback(async (quality: number) => {
     if (!user || current >= cards.length) return;
     const card   = cards[current];
-    const result = sm2(quality, card.mastery_level, card.easiness_factor ?? 2.5,
-      card.next_review_at ? new Date(card.next_review_at) : null);
+    const result = sm2(quality, card.mastery_level, card.easiness_factor ?? 2.5);
 
-    await supabase.from("flashcards").update({
-      mastery_level:   result.newMasteryLevel,
-      easiness_factor: result.newEasinessFactor,
-      next_review_at:  result.nextReviewAt.toISOString(),
-    }).eq("id", card.id);
-
-    await supabase.from("flashcard_reviews").insert({
-      user_id: user.id, card_id: card.id, deck_id: card.deck_id, quality,
-    });
+    try {
+      await recordFlashcardReview({
+        userId: user.id,
+        cardId: card.id,
+        deckId: card.deck_id,
+        quality,
+        masteryLevel: result.newMasteryLevel,
+        easinessFactor: result.newEasinessFactor,
+        nextReviewAt: result.nextReviewAt,
+      });
+    } catch (error) {
+      console.warn("[QuickReviewSession] Failed to persist flashcard review:", error);
+      return;
+    }
 
     if (quality >= 4) playCorrectSound(); else playWrongSound();
 
@@ -76,9 +100,53 @@ export default function QuickReviewSession({ onClose, onComplete }: QuickReviewS
     }, 200);
   }, [user, current, cards, refreshCount, onComplete]);
 
+  if (!started) return (
+    <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-card border border-border rounded-2xl shadow-card p-5 space-y-4">
+        <div className="text-center space-y-1">
+          <h2 className="text-lg font-bold text-card-foreground">Quick Review</h2>
+          <p className="text-sm text-muted-foreground">Scegli un mazzo e avvia una sessione rapida.</p>
+        </div>
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">Mazzo</p>
+          <Select value={selectedDeck} onValueChange={setSelectedDeck} disabled={loadingDecks}>
+            <SelectTrigger>
+              <SelectValue placeholder={loadingDecks ? "Caricamento..." : "Tutti i mazzi"} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Tutti i mazzi</SelectItem>
+              {deckList.map((deck) => (
+                <SelectItem key={deck.id} value={deck.id}>
+                  {deck.title} ({deck.card_count})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" className="flex-1" onClick={onClose}>Annulla</Button>
+          <Button className="flex-1 gap-2" onClick={startReview} disabled={loadingDecks}>
+            <Layers className="h-4 w-4" /> Inizia
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+
   if (loading) return (
     <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur flex items-center justify-center">
       <Brain className="h-8 w-8 animate-spin text-primary" />
+    </div>
+  );
+
+  if (loadError) return (
+    <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur flex flex-col items-center justify-center gap-4 p-6">
+      <h2 className="text-lg font-bold text-foreground text-center">Errore caricamento</h2>
+      <p className="text-muted-foreground text-sm text-center">{loadError}</p>
+      <div className="flex w-full max-w-xs gap-2">
+        <Button variant="outline" className="flex-1" onClick={onClose}>Chiudi</Button>
+        <Button className="flex-1" onClick={startReview}>Riprova</Button>
+      </div>
     </div>
   );
 

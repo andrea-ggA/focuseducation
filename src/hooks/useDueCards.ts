@@ -14,6 +14,18 @@ export interface DueCard {
   deck_title:      string;
 }
 
+interface DueCardRow {
+  id: string;
+  front: string;
+  back: string;
+  topic: string | null;
+  mastery_level: number;
+  easiness_factor: number | null;
+  next_review_at: string | null;
+  deck_id: string;
+  deck_title?: string | null;
+}
+
 export function useDueCards() {
   const { user }                = useAuth();
   const [dueCount, setDueCount] = useState(0);
@@ -40,17 +52,13 @@ export function useDueCards() {
     if (!user) return [];
 
     if (deckId) {
-      // Direct query for a specific deck — no RPC needed
-      const { data, error } = await supabase
-        .from("flashcards")
-        .select("id,front,back,topic,deck_id,mastery_level,easiness_factor,next_review_at, flashcard_decks!inner(title)")
-        .eq("deck_id", deckId)
-        .or(`next_review_at.is.null,next_review_at.lte.${new Date().toISOString()}`)
-        .order("easiness_factor", { ascending: true })
-        .limit(limit);
+      const { data, error } = await supabase.rpc("get_due_cards_for_deck", {
+        _deck_id: deckId,
+        _limit: limit,
+      });
 
       if (error || !data) return [];
-      return (data as any[]).map(row => ({
+      return (data as DueCardRow[]).map(row => ({
         id: row.id, front: row.front, back: row.back, topic: row.topic,
         mastery_level: row.mastery_level, easiness_factor: row.easiness_factor ?? 2.5,
         next_review_at: row.next_review_at, deck_id: row.deck_id,
@@ -68,7 +76,7 @@ export function useDueCards() {
       return [];
     }
 
-    return (data as any[]).map((row) => ({
+    return (data as DueCardRow[]).map((row) => ({
       id:              row.id,
       front:           row.front,
       back:            row.back,

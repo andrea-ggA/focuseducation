@@ -5,6 +5,7 @@
  * Ora solo le chiamate con l'header x-internal-secret corretto sono accettate.
  */
 import { serve } from "https://deno.land/std@0.220.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const FROM   = "FocusED <noreply@focuseducation.app>";
 const DOMAIN = Deno.env.get("SITE_URL") || "https://focuseducation.lovable.app";
@@ -118,11 +119,12 @@ serve(async (req) => {
 
   // FIX: Verifica segreto interno per prevenire abusi
   const INTERNAL_SECRET = Deno.env.get("INTERNAL_FUNCTION_SECRET");
-  if (INTERNAL_SECRET) {
-    const callerSecret = req.headers.get("x-internal-secret");
+  const callerSecret = req.headers.get("x-internal-secret");
+  const isInternalCall = Boolean(INTERNAL_SECRET) && callerSecret === INTERNAL_SECRET;
+  if (INTERNAL_SECRET && !isInternalCall) {
     if (callerSecret !== INTERNAL_SECRET) {
       console.error("[send-email] Unauthorized call — missing or wrong x-internal-secret");
-      return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
+      console.warn("[send-email] Unauthorized internal secret for this call path");
     }
   }
 
@@ -133,6 +135,28 @@ serve(async (req) => {
 
     if (!type || !to) {
       return new Response(JSON.stringify({ error: "type and to are required" }), { status: 400 });
+    }
+
+    if (!isInternalCall) {
+      const authHeader = req.headers.get("Authorization");
+      if (!authHeader?.startsWith("Bearer ")) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
+      }
+
+      const supabase = createClient(
+        Deno.env.get("SUPABASE_URL")!,
+        Deno.env.get("SUPABASE_ANON_KEY")!,
+        { global: { headers: { Authorization: authHeader } } },
+      );
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      const userEmail = authData?.user?.email?.toLowerCase();
+      if (authError || !userEmail) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 });
+      }
+
+      if (type !== "welcome" || to.toLowerCase() !== userEmail) {
+        return new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 });
+      }
     }
 
     const emailData = { name: name || "Studente", ...data };

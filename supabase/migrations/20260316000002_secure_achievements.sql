@@ -55,5 +55,4 @@ $$;
 -- Only service_role (Edge Functions) can insert directly
 CREATE POLICY "Service role insert achievements"
   ON public.achievements FOR INSERT
-  USING (auth.role() = 'service_role')
   WITH CHECK (auth.role() = 'service_role');

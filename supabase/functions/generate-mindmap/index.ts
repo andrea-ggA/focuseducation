@@ -7,6 +7,32 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+interface MindmapNode {
+  id: string;
+  label: string;
+  description: string;
+  group: string;
+  importance?: number;
+}
+
+interface MindmapEdge {
+  from: string;
+  to: string;
+  label?: string;
+}
+
+interface MindmapPayload {
+  nodes: MindmapNode[];
+  edges: MindmapEdge[];
+}
+
+interface ErrorWithStatus {
+  status?: number;
+}
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
@@ -132,7 +158,7 @@ ${textPreview}
 
     const aiData  = await res.json();
     const toolCall = aiData.choices?.[0]?.message?.tool_calls?.[0];
-    let mindmap   = { nodes: [] as any[], edges: [] as any[] };
+    let mindmap: MindmapPayload = { nodes: [], edges: [] };
 
     if (toolCall?.function?.arguments) {
       mindmap = JSON.parse(toolCall.function.arguments);
@@ -143,7 +169,7 @@ ${textPreview}
       if (s !== -1 && e !== -1) mindmap = JSON.parse(cleaned.substring(s, e + 1));
     }
 
-    mindmap.nodes = mindmap.nodes.map((n: any) => ({ ...n, importance: n.importance || 1 }));
+    mindmap.nodes = mindmap.nodes.map((node) => ({ ...node, importance: node.importance || 1 }));
     if (!mindmap.nodes?.length) throw new Error("Nessun concetto estratto");
 
     console.log(`Mindmap: ${mindmap.nodes.length} nodes, ${mindmap.edges?.length || 0} edges`);
@@ -151,10 +177,11 @@ ${textPreview}
     return new Response(JSON.stringify({ success: true, ...mindmap }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-  } catch (e: any) {
+  } catch (e: unknown) {
+    const errorWithStatus = e as ErrorWithStatus;
     console.error("generate-mindmap error:", e);
-    return new Response(JSON.stringify({ error: e.message || "Unknown error" }), {
-      status: e.status || 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({ error: getErrorMessage(e, "Unknown error") }), {
+      status: errorWithStatus.status || 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

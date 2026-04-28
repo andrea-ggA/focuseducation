@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+import { getLocalDateString } from "@/lib/datetime";
 
 export interface UserXP {
   total_xp:           number;
@@ -43,7 +44,13 @@ export const useGamification = () => {
   const [streakCount,  setStreakCount]  = useState(0);
 
   const fetchAll = useCallback(async () => {
-    if (!user) return;
+    if (!user) {
+      setXp(null);
+      setAchievements([]);
+      setStreakCount(0);
+      setLoading(false);
+      return;
+    }
 
     try {
       // Promise.allSettled: each query fails independently — never blocks UI
@@ -79,8 +86,9 @@ export const useGamification = () => {
       // Previene race condition multi-tab che causava doppio incremento streak
       // e consumo multiplo dello streak_freeze power-up
       try {
-        const { data: streakResult, error: streakError } = await supabase.rpc("update_daily_streak" as any, {
+        const { data: streakResult, error: streakError } = await supabase.rpc("update_daily_streak", {
           _user_id: user.id,
+          _today: getLocalDateString(),
         });
         if (streakError) {
           console.error("[useGamification] streak RPC error:", streakError);
@@ -88,8 +96,8 @@ export const useGamification = () => {
             setStreakCount(profileRes.value.data.streak_count || 0);
           }
         } else {
-          const sr = streakResult as any;
-          setStreakCount(sr?.streak ?? 0);
+          const streakData = streakResult as { streak?: number } | null;
+          setStreakCount(streakData?.streak ?? 0);
         }
       } catch (streakErr) {
         console.error("[useGamification] streak update failed:", streakErr);

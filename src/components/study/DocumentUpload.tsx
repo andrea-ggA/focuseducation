@@ -28,9 +28,11 @@ import { useSubscription } from "@/hooks/useSubscription";
 import { motion, AnimatePresence } from "framer-motion";
 import { Slider } from "@/components/ui/slider";
 import * as pdfjsLib from "pdfjs-dist";
+import pdfWorkerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import mammoth from "mammoth";
 import VoiceNotes from "@/components/study/VoiceNotes";
 import { Link } from "react-router-dom";
+import { isSafeYouTubeUrl } from "@/lib/security";
 import {
   generateQuizOrFlashcards,
   generateQuizOrFlashcardsFromImages,
@@ -43,12 +45,19 @@ import {
   fetchYoutubeTranscript,
   getAuthToken,
 } from "@/lib/backendApi";
+import {
+  ACTIVE_GENERATION_JOB_STATUSES,
+  GENERATION_JOB_STATUS,
+  isActiveGenerationJobStatus,
+} from "@/lib/generationJobState";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
 
 // ═══ § 2 COSTANTI & TIPI ═══════════════════════════════════════════════════════
-const SUPPORTED_EXTENSIONS = [".txt", ".md", ".csv", ".pdf", ".docx", ".doc", ".json", ".xml", ".html"];
+const SUPPORTED_EXTENSIONS = [".txt", ".md", ".csv", ".pdf", ".docx", ".doc", ".json"];
+const ALLOWED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const ALLOWED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp"]);
 
 const MAX_IMAGES = 5;
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
@@ -58,6 +67,15 @@ interface UploadedImage {
   preview: string;
   base64: string;
 }
+
+interface PdfTextItem {
+  str?: string;
+  transform?: number[];
+  width?: number;
+}
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
 
 
 // ═══ § 3 FILE HELPERS ══════════════════════════════════════════════════════════
@@ -73,7 +91,7 @@ async function extractTextFromPdf(arrayBuffer: ArrayBuffer): Promise<string> {
     // - raggruppa item per riga (stesso Y approssimativo)
     // - aggiunge spazio solo se c'è un gap significativo tra item sulla stessa riga
     // - aggiunge a capo tra righe diverse
-    const items = content.items as any[];
+    const items = content.items as PdfTextItem[];
     if (items.length === 0) continue;
 
     let pageText = "";
@@ -131,7 +149,7 @@ interface DocumentUploadProps {
   hasGamified: boolean;
   onTextContentSet?: (text: string) => void;
   onDecompose?: () => void;
-  onMindMap?: (nodes: any[], edges: any[]) => void;
+  onMindMap?: (nodes: unknown[], edges: unknown[]) => void;
   onInsufficientCredits?: (action?: string, creditsNeeded?: number) => void;
   onSummaryGenerated?: (content: string, format: string, title: string) => void;
 }
@@ -157,6 +175,15 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
   const [loadingYoutube, setLoadingYoutube] = useState(false);
   const [youtubeElapsed, setYoutubeElapsed] = useState(0);
   const youtubeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Cleanup blob URLs on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      images.forEach(img => {
+        if (img.preview) URL.revokeObjectURL(img.preview);
+      });
+    };
+  }, [images]);
 
   // Timer for YouTube import elapsed time
   useEffect(() => {
@@ -228,8 +255,11 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
     const newImages: UploadedImage[] = [];
 
     for (const f of newFiles) {
-      if (!f.type.startsWith("image/")) {
-        toast({ title: "Formato non valido", description: `${f.name} non è un'immagine.`, variant: "destructive" });
+      const ext = f.name.toLowerCase().substring(f.name.lastIndexOf("."));
+      const mime = f.type.toLowerCase();
+      const isAllowedImage = ALLOWED_IMAGE_MIME_TYPES.has(mime) || (!mime && ALLOWED_IMAGE_EXTENSIONS.has(ext));
+      if (!isAllowedImage) {
+        toast({ title: "Formato non valido", description: `${f.name}: formato immagine non consentito (JPG/PNG/WEBP).`, variant: "destructive" });
         continue;
       }
       if (f.size > MAX_IMAGE_SIZE) {
@@ -265,6 +295,14 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
   // ─── § 8 HANDLER: YOUTUBE ──────────────────────────────────────────────────
   const handleYoutubeImport = async () => {
     if (!youtubeUrl.trim() || !user) return;
+    if (!isSafeYouTubeUrl(youtubeUrl)) {
+      toast({
+        title: "URL YouTube non valido",
+        description: "Incolla un link YouTube valido (youtube.com o youtu.be).",
+        variant: "destructive",
+      });
+      return;
+    }
     if (!canUseYouTubeImport) {
       toast({ title: "Funzione Pro", description: "L'import da YouTube è disponibile con i piani Focus Pro e Hyperfocus Master.", variant: "destructive" });
       return;
@@ -303,9 +341,13 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
           ? `"${title}" — ${transcript.length.toLocaleString()} caratteri generati dall'AI. Spesi ${CREDIT_COSTS.youtube} cr.`
           : `"${title}" — ${transcript.length.toLocaleString()} caratteri estratti. Spesi ${CREDIT_COSTS.youtube} cr. Ora genera quiz, flashcard o riassunti!`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("YouTube import error:", err);
-      toast({ title: "Errore import YouTube", description: err.message || "Impossibile trascrivere il video.", variant: "destructive" });
+      toast({
+        title: "Errore import YouTube",
+        description: getErrorMessage(err, "Impossibile trascrivere il video."),
+        variant: "destructive",
+      });
       await refreshCredits();
     } finally {
       setLoadingYoutube(false);
@@ -321,7 +363,8 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
 
   // ─── § 9 HANDLER: GENERA (quiz / flashcard) ───────────────────────────────
   const generate = async (type: "quiz" | "flashcards" | "quiz_gamified") => {
-    if (!hasContent || !user) {
+    const normalizedText = textContent.trim();
+    if ((!hasImages && !normalizedText) || !user) {
       toast({ title: "Nessun contenuto", description: "Carica un documento, incolla del testo o aggiungi delle foto.", variant: "destructive" });
       return;
     }
@@ -351,14 +394,18 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         }
       }
 
-      // Fix 4: chiudi eventuali job "processing" precedenti dello stesso tipo
-      // prima di crearne uno nuovo. Evita spinner multipli sovrapposti se si riprova.
+      // Chiudi eventuali job attivi precedenti dello stesso tipo prima di crearne uno nuovo.
+      // Evita spinner multipli sovrapposti se si riprova.
       await supabase
         .from("generation_jobs")
-        .update({ status: "cancelled", error: "Sostituito da nuova generazione", completed_at: new Date().toISOString() })
+        .update({
+          status: GENERATION_JOB_STATUS.CANCELLED,
+          error: "Sostituito da nuova generazione",
+          completed_at: new Date().toISOString(),
+        })
         .eq("user_id", user.id)
         .eq("content_type", isFlash ? "flashcards" : "quiz")
-        .in("status", ["pending", "processing"]);
+        .in("status", [...ACTIVE_GENERATION_JOB_STATUSES]);
 
       // Crea job per tracking
       // Fix 6: se l'insert fallisce, lanciamo un errore esplicito invece di usare
@@ -366,11 +413,25 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
       // Realtime subscription silente e spinner infinito.
       const { data: job, error: jobError } = await supabase
         .from("generation_jobs")
-        .insert({ user_id: user.id, content_type: isFlash ? "flashcards" : "quiz", title: docTitle, document_id: documentId || null, status: "processing" })
+        .insert({
+          user_id: user.id,
+          content_type: isFlash ? "flashcards" : "quiz",
+          title: docTitle,
+          document_id: documentId || null,
+          status: GENERATION_JOB_STATUS.PENDING,
+          error: null,
+          completed_at: null,
+        })
         .select("id").single();
       if (jobError || !job?.id) throw new Error("Impossibile avviare il job di generazione. Riprova.");
       const jobId = job.id;
       createdJobId = jobId;
+
+      await supabase
+        .from("generation_jobs")
+        .update({ status: GENERATION_JOB_STATUS.PROCESSING, error: null })
+        .eq("id", jobId)
+        .in("status", [GENERATION_JOB_STATUS.PENDING]);
 
       toast({ title: "🚀 Generazione avviata", description: `Spesi ${CREDIT_COSTS[creditAction]} cr. Elaborazione in corso...` });
 
@@ -392,7 +453,7 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         result = await generateQuizOrFlashcardsFromImages(dataUrls, type, jobId, documentId, docTitle);
       } else {
         // Testo (estratto da file o incollato) → Edge Function
-        const content = textContent.trim();
+        const content = normalizedText;
         if (!content) throw new Error("Nessun testo da elaborare");
         result = await generateQuizOrFlashcards(type, content, jobId, documentId, docTitle);
       }
@@ -416,7 +477,7 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
                 await supabase
                   .from("generation_jobs")
                   .update({
-                    status: "error",
+                    status: GENERATION_JOB_STATUS.ERROR,
                     error: "Quiz creato senza domande. Riprova.",
                     completed_at: new Date().toISOString(),
                   })
@@ -430,8 +491,14 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
           if (job.id) {
             await supabase
               .from("generation_jobs")
-              .update({ status: "completed", result_id: resultId, completed_at: new Date().toISOString(), error: null })
-              .eq("id", job.id);
+              .update({
+                status: GENERATION_JOB_STATUS.COMPLETED,
+                result_id: resultId,
+                completed_at: new Date().toISOString(),
+                error: null,
+              })
+              .eq("id", job.id)
+              .in("status", [...ACTIVE_GENERATION_JOB_STATUSES]);
           }
           if (isFlash) onFlashcardsGenerated(resultId);
           else         onQuizGenerated(resultId);
@@ -442,41 +509,37 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         setGenerating(null);
 
       } else if (result.mode === "async_edge") {
-        // Con ASYNC_THRESHOLD=500k questo percorso non dovrebbe mai essere raggiunto.
-        // Se succede (documento enorme), rilascia subito il loader locale e lascia
-        // che il GenerationNotifier globale gestisca il tracking via Realtime.
-        // Due spinner separati sullo stesso job causavano loader duplicati.
+        // Percorso async: rilascia subito il loader locale e lascia
+        // il tracking del job al GenerationNotifier globale via Realtime.
         toast({ title: "⏳ Generazione in background", description: "La generazione continua in background. Riceverai una notifica al termine." });
         setGenerating(null); // rilascia subito il loader locale — GenerationNotifier gestisce il resto
 
-        // Safety: se dopo 8 minuti il job è ancora processing, lo chiude come errore nel DB
-        // così il GenerationNotifier smette di mostrarlo invece di restare zombie.
+        // Safety: dopo 8 minuti ricarica lo stato crediti e lascia la decisione finale
+        // al backend/notifier, evitando di forzare errori lato client su job ancora vivi.
         setTimeout(async () => {
           const { data: jc } = await supabase.from("generation_jobs").select("status, result_id").eq("id", result.jobId).single();
-          if (!jc || jc.status === "processing" || jc.status === "pending") {
-            await supabase.from("generation_jobs").update({
-              status: "error",
-              error: "Timeout: generazione interrotta dopo 8 minuti.",
-              completed_at: new Date().toISOString(),
-            }).eq("id", result.jobId);
+          if (!jc || isActiveGenerationJobStatus(jc.status)) {
             await refreshCredits();
-          } else if (jc.status === "completed" && jc.result_id) {
+          } else if (jc.status === GENERATION_JOB_STATUS.COMPLETED && jc.result_id) {
             if (isFlash) onFlashcardsGenerated(jc.result_id);
             else         onQuizGenerated(jc.result_id);
           }
         }, 8 * 60 * 1000);
       }
 
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[generate] error:", err);
+      const errorMessage = getErrorMessage(err, "Generazione fallita");
       if (createdJobId) {
         await supabase.from("generation_jobs").update({
-          status: "error",
-          error: err.message || "Generazione fallita",
+          status: GENERATION_JOB_STATUS.ERROR,
+          error: errorMessage,
           completed_at: new Date().toISOString(),
-        }).eq("id", createdJobId);
+        })
+          .eq("id", createdJobId)
+          .in("status", [...ACTIVE_GENERATION_JOB_STATUSES]);
       }
-      toast({ title: "Errore generazione", description: err.message || "Generazione fallita. Riprova.", variant: "destructive" });
+      toast({ title: "Errore generazione", description: getErrorMessage(err, "Generazione fallita. Riprova."), variant: "destructive" });
       await refreshCredits();
       setGenerating(null);
     }
@@ -502,9 +565,13 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
       const result = await saveMicroTaskResult(user.id, tasks, file?.name || "Studio");
       toast({ title: "📋 Piano creato!", description: `${result.totalTasks} micro-task generati. Spesi ${CREDIT_COSTS.decompose} cr.` });
       onDecompose?.();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[decompose] error:", err);
-      toast({ title: "Errore", description: err.message || "Scomposizione fallita.", variant: "destructive" });
+      toast({
+        title: "Errore",
+        description: getErrorMessage(err, "Scomposizione fallita."),
+        variant: "destructive",
+      });
       await refreshCredits();
     } finally {
       setGenerating(null);
@@ -530,9 +597,13 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
       await saveMindmapResult(user.id, nodes, edges, title);
       toast({ title: "🧠 Mappa creata e salvata!", description: `${nodes.length} concetti estratti. Spesi ${CREDIT_COSTS.mindmap} cr.` });
       onMindMap?.(nodes, edges);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[mindmap] error:", err);
-      toast({ title: "Errore", description: err.message || "Generazione mappa fallita.", variant: "destructive" });
+      toast({
+        title: "Errore",
+        description: getErrorMessage(err, "Generazione mappa fallita."),
+        variant: "destructive",
+      });
       await refreshCredits();
     } finally {
       setGenerating(null);
@@ -543,7 +614,7 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
   // RIASSUNTO / SCHEMA / APPUNTI SMART
   // ──────────────────────────────────────────────────────────────────────────
   const handleSummary = async (format: "summary" | "outline" | "smart_notes") => {
-    if (!hasContent || !user) {
+    if ((!hasImages && !textContent.trim()) || !user) {
       toast({ title: "Nessun contenuto", description: "Carica un documento, incolla del testo o aggiungi delle foto.", variant: "destructive" });
       return;
     }
@@ -578,16 +649,19 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         markdown = await generateSummary(format, textContent.trim() || "");
       }
 
-      const resultId = await saveSummaryResult(user.id, markdown, format, docTitle);
+      await saveSummaryResult(user.id, markdown, format, docTitle);
 
       // Notifica il parent component
-      const summaryData = { content: markdown, format, title: docTitle };
       onSummaryGenerated?.(markdown, format, docTitle);
 
       toast({ title: `✅ ${formatLabels[format]} completato!`, description: "Disponibile nella tua libreria." });
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("[summary] error:", err);
-      toast({ title: "Errore", description: err.message || "Generazione fallita.", variant: "destructive" });
+      toast({
+        title: "Errore",
+        description: getErrorMessage(err, "Generazione fallita."),
+        variant: "destructive",
+      });
       await refreshCredits();
     } finally {
       setGenerating(null);
@@ -627,7 +701,7 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
       <AnimatePresence mode="wait">
         {inputMode === "file" ? (
           <motion.div key="file" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-            <input ref={fileRef} type="file" accept=".txt,.md,.pdf,.doc,.docx,.csv,.json,.xml,.html" onChange={handleFileSelect} className="hidden" />
+            <input ref={fileRef} type="file" accept=".txt,.md,.pdf,.doc,.docx,.csv,.json" onChange={handleFileSelect} className="hidden" />
             <div onClick={() => !extracting && fileRef.current?.click()}
               className={`border-2 border-dashed border-border rounded-xl p-8 text-center cursor-pointer hover:border-primary/50 hover:bg-secondary/30 transition-all ${extracting ? "pointer-events-none opacity-70" : ""}`}>
               {extracting ? (
@@ -661,7 +735,7 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
           </motion.div>
         ) : inputMode === "images" ? (
           <motion.div key="images" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-            <input ref={imageRef} type="file" accept="image/*" multiple onChange={handleImageSelect} className="hidden" />
+            <input ref={imageRef} type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple onChange={handleImageSelect} className="hidden" />
 
             {images.length > 0 && (
               <div className="grid grid-cols-3 sm:grid-cols-5 gap-3 mb-4">

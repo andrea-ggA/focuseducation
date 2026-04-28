@@ -5,6 +5,7 @@ import { Target, BookOpen, Timer, CheckCircle2 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { motion } from "framer-motion";
+import { getLocalDateString } from "@/lib/datetime";
 
 interface Objectives {
   id: string;
@@ -24,7 +25,7 @@ const DailyObjectives = () => {
   useEffect(() => {
     if (!user) return;
     const fetch = async () => {
-      const today = new Date().toISOString().split("T")[0];
+      const today = getLocalDateString();
       const { data } = await supabase
         .from("daily_objectives")
         .select("*")
@@ -37,16 +38,55 @@ const DailyObjectives = () => {
         setTargetQ(data.target_questions);
         setTargetF(data.target_focus_minutes);
       } else {
-        // Create today's objectives
-        const { data: created } = await supabase
+        // Create today's objectives with upsert to avoid race conditions (multi-tab)
+        const { data: created, error: upsertError } = await supabase
           .from("daily_objectives")
-          .insert({ user_id: user.id, objective_date: today, target_questions: 20, target_focus_minutes: 30 })
+          .upsert(
+            { user_id: user.id, objective_date: today, target_questions: 20, target_focus_minutes: 30 },
+            { onConflict: "user_id,objective_date" }
+          )
           .select("*")
-          .single();
-        if (created) setObj(created);
+          .maybeSingle();
+        
+        if (created) {
+          setObj(created);
+        } else if (upsertError) {
+          // If upsert fails, try fetching again as someone might have created it
+          const { data: retryData } = await supabase
+            .from("daily_objectives")
+            .select("*")
+            .eq("user_id", user.id)
+            .eq("objective_date", today)
+            .maybeSingle();
+          if (retryData) setObj(retryData);
+        }
       }
     };
     fetch();
+
+    const today = getLocalDateString();
+    const channel = supabase
+      .channel(`daily_objectives:${user.id}:${today}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "daily_objectives",
+          filter: `user_id=eq.${user.id}`,
+        },
+        (payload) => {
+          const row = payload.new as Partial<Objectives & { objective_date: string }> | undefined;
+          if (row?.objective_date === today) {
+            setObj(row as Objectives);
+          }
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user]);
 
   const saveTargets = async () => {

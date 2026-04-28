@@ -5,8 +5,14 @@ import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import ReactMarkdown from "react-markdown";
+import { SAFE_MARKDOWN_COMPONENTS } from "@/lib/security";
 
 const MIN_WRONG_ANSWERS = 10; // minimum wrong answers needed for meaningful analysis
+
+interface WrongAnswerRow {
+  topic: string | null;
+  quiz_id: string | null;
+}
 
 export default function RecurringErrorAnalysis() {
   const { user }                    = useAuth();
@@ -55,8 +61,8 @@ export default function RecurringErrorAnalysis() {
 
       // Aggregate by topic
       const topicCounts: Record<string, number> = {};
-      for (const row of wrongAnswers as any[]) {
-        const t = (row as any).topic || "Generale";
+      for (const row of wrongAnswers as WrongAnswerRow[]) {
+        const t = row.topic || "Generale";
         topicCounts[t] = (topicCounts[t] || 0) + 1;
       }
       const topicSummary = Object.entries(topicCounts)
@@ -92,7 +98,7 @@ Totale errori analizzati: ${wrongAnswers.length}`,
       } else {
         setAnalysis("Impossibile generare l'analisi. Riprova più tardi.");
       }
-    } catch (e) {
+    } catch (e: unknown) {
       console.error("[RecurringErrorAnalysis]", e);
       setAnalysis("Errore durante l'analisi. Controlla la connessione.");
     } finally {
@@ -145,7 +151,7 @@ Totale errori analizzati: ${wrongAnswers.length}`,
 
               {analysis && !loading && (
                 <div className="prose prose-sm dark:prose-invert max-w-none text-sm">
-                  <ReactMarkdown>{analysis}</ReactMarkdown>
+                  <ReactMarkdown components={SAFE_MARKDOWN_COMPONENTS}>{analysis}</ReactMarkdown>
                 </div>
               )}
 

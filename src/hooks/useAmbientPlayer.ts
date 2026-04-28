@@ -10,8 +10,17 @@ export function useAmbientPlayer() {
   const [isPlaying, setIsPlaying] = useState(false);
   const audioRef                  = useRef<HTMLAudioElement | null>(null);
 
-  // Pause on unmount
-  useEffect(() => () => { audioRef.current?.pause(); }, []);
+  // Pause and cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+        audioRef.current.load();
+        audioRef.current = null;
+      }
+    };
+  }, []);
 
   const [loadError, setLoadError] = useState(false);
 
@@ -35,7 +44,11 @@ export function useAmbientPlayer() {
 
     // Rebuild audio element if URL changed or not yet created
     if (!audioRef.current || !audioRef.current.src.includes(sound.url)) {
-      audioRef.current?.pause();
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+        audioRef.current.load();
+      }
       audioRef.current = createAudio(sound.url);
     }
 
@@ -55,7 +68,13 @@ export function useAmbientPlayer() {
 
   const changeSound = useCallback(
     (newId: AmbientSoundId) => {
-      audioRef.current?.pause();
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+        audioRef.current.load();
+        audioRef.current = null;
+      }
+      
       setLoadError(false);
       setSoundId(newId);
 

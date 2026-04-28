@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, forwardRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable/index";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,6 +11,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import LanguageSelector from "@/components/LanguageSelector";
 import { useAuth } from "@/contexts/AuthContext";
+import { normalizeReferralCode } from "@/lib/security";
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
 
 const GoogleIcon = forwardRef<SVGSVGElement, React.SVGProps<SVGSVGElement>>((props, ref) => (
   <svg ref={ref} viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true" {...props}>
@@ -27,7 +30,6 @@ GoogleIcon.displayName = "GoogleIcon";
 type AuthView = "login" | "register" | "forgot";
 
 const GOOGLE_TIMEOUT_MS = 15_000; // 15s — reset loader if redirect never happens
-
 const Auth = () => {
   const { t }        = useTranslation();
   const { session, loading: authLoading } = useAuth();
@@ -50,8 +52,11 @@ const Auth = () => {
   // Referral code from URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const ref    = params.get("ref");
-    if (ref) { setReferralCode(ref); setView("register"); }
+    const normalizedRef = normalizeReferralCode(params.get("ref"));
+    if (normalizedRef) {
+      setReferralCode(normalizedRef);
+      setView("register");
+    }
   }, []);
 
   // Redirect reactively as soon as auth state is ready.
@@ -88,19 +93,22 @@ const Auth = () => {
     }, GOOGLE_TIMEOUT_MS);
 
     try {
-      const result = await lovable.auth.signInWithOAuth("google", {
-        redirect_uri: window.location.origin,
-        extraParams: {
-          prompt: "select_account",
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: window.location.origin,
+          queryParams: {
+            prompt: "select_account",
+          },
         },
       });
 
-      if (result.error) throw result.error;
+      if (error) throw error;
 
-      if (!result.redirected) {
+      if (!data?.url) {
         setGoogleLoading(false);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (googleTimeoutRef.current) {
         clearTimeout(googleTimeoutRef.current);
         googleTimeoutRef.current = null;
@@ -109,7 +117,7 @@ const Auth = () => {
       setGoogleError(true);
       toast({
         title:       "Errore accesso Google",
-        description: err.message || "Impossibile connettersi a Google. Riprova o usa email/password.",
+        description: getErrorMessage(err, "Impossibile connettersi a Google. Riprova o usa email/password."),
         variant:     "destructive",
       });
     }
@@ -126,8 +134,12 @@ const Auth = () => {
       });
       if (error) throw error;
       setResetSent(true);
-    } catch (err: any) {
-      toast({ title: "Errore", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({
+        title: "Errore",
+        description: getErrorMessage(err, "Impossibile inviare il reset password."),
+        variant: "destructive",
+      });
     } finally { setLoading(false); }
   };
 
@@ -151,13 +163,18 @@ const Auth = () => {
           },
         });
         if (error) throw error;
-        if (referralCode.trim() && signUpData.user) {
-          localStorage.setItem("pending_referral_code", referralCode.trim().toUpperCase());
+        const normalizedCode = normalizeReferralCode(referralCode);
+        if (normalizedCode && signUpData.user) {
+          localStorage.setItem("pending_referral_code", normalizedCode);
         }
         toast({ title: t("auth.checkEmail"), description: t("auth.confirmSent") });
       }
-    } catch (err: any) {
-      toast({ title: "Errore", description: err.message, variant: "destructive" });
+    } catch (err: unknown) {
+      toast({
+        title: "Errore",
+        description: getErrorMessage(err, "Autenticazione non riuscita."),
+        variant: "destructive",
+      });
     } finally { setLoading(false); }
   };
 

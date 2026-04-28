@@ -29,11 +29,26 @@ interface QuizAttempt {
   xp_earned: number;
 }
 
+interface QuizAttemptActivity {
+  completed_at: string;
+}
+
 interface QuestionProgress {
   is_correct: boolean;
   answered_at: string;
   topic: string | null;
   quiz_id: string;
+}
+
+interface ChartTooltipPayload {
+  name?: string | number;
+  value?: string | number;
+}
+
+interface ChartTooltipProps {
+  active?: boolean;
+  payload?: ChartTooltipPayload[];
+  label?: string | number;
 }
 
 const COLORS = [
@@ -49,7 +64,7 @@ const Statistics = () => {
   const { user } = useAuth();
   const [focusSessions, setFocusSessions] = useState<FocusSession[]>([]);
   const [allFocusSessions, setAllFocusSessions] = useState<FocusSession[]>([]);
-  const [allQuizAttempts, setAllQuizAttempts] = useState<QuizAttempt[]>([]);
+  const [allQuizAttempts, setAllQuizAttempts] = useState<QuizAttemptActivity[]>([]);
   const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>([]);
   const [questionProgress, setQuestionProgress] = useState<QuestionProgress[]>([]);
   const [loading, setLoading] = useState(true);
@@ -97,7 +112,7 @@ const Statistics = () => {
       if (focusRes.data) setFocusSessions(focusRes.data);
       if (quizRes.data) setQuizAttempts(quizRes.data);
       if (focusAllRes.data) setAllFocusSessions(focusAllRes.data);
-      if (quizAllRes.data) setAllQuizAttempts(quizAllRes.data as any);
+      if (quizAllRes.data) setAllQuizAttempts(quizAllRes.data as QuizAttemptActivity[]);
 
       // Fetch topics for questions via quiz_questions
       if (progressRes.data && progressRes.data.length > 0) {
@@ -240,12 +255,12 @@ const Statistics = () => {
     { icon: TrendingUp, label: "XP guadagnati", value: `${totalXP}`, color: "text-accent" },
   ];
 
-  const CustomTooltip = ({ active, payload, label }: any) => {
+  const CustomTooltip = ({ active, payload, label }: ChartTooltipProps) => {
     if (!active || !payload?.length) return null;
     return (
       <div className="bg-popover border border-border rounded-lg px-3 py-2 shadow-md text-sm">
         <p className="font-medium text-popover-foreground">{label}</p>
-        {payload.map((p: any, i: number) => (
+        {payload.map((p, i: number) => (
           <p key={i} className="text-muted-foreground">
             {p.name}: <span className="font-semibold text-popover-foreground">{p.value}</span>
           </p>

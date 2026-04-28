@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
+import { normalizeReferralCode } from "@/lib/security";
 
 interface AuthContextType {
   session: Session | null;
@@ -51,7 +52,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             } catch (e) { console.error("Welcome email error:", e); }
           }
 
-          const pendingCode = localStorage.getItem("pending_referral_code");
+          const pendingCode = normalizeReferralCode(localStorage.getItem("pending_referral_code") || undefined);
           if (pendingCode) {
             localStorage.removeItem("pending_referral_code");
             try {

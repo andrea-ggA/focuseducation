@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 // FIX: Web Worker per timer preciso su mobile — iOS Safari throttola setInterval
 // quando la tab è in background (schermo spento durante sessione Pomodoro)
 const createTimerWorker = () =>
@@ -6,13 +6,13 @@ const createTimerWorker = () =>
 import { Button } from "@/components/ui/button";
 import { Timer, Play, Pause, RotateCcw, Volume2, VolumeX } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
-import { motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import DopamineBreak from "@/components/dashboard/DopamineBreak";
 import type { EnergyLevel } from "@/components/dashboard/EnergySelector";
 import { AMBIENT_SOUNDS } from "@/lib/ambientSounds";
+import { awardUserXp } from "@/lib/progression";
 
 type TimerPhase = "focus" | "short_break" | "long_break";
 
@@ -101,17 +101,24 @@ const PomodoroTimer = ({ energyLevel = "balanced", onSessionComplete }: Pomodoro
   const [breakActivityDone, setBreakActivityDone] = useState(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const soundNodesRef = useRef<AmbientSoundNodes | null>(null);
-  const intervalRef = useRef<number | null>(null); // kept for cleanup compat
   const workerRef   = useRef<Worker | null>(null);
   const startTimeRef = useRef<Date | null>(null);
 
   // Adapt timings based on energy level
-  const config = {
+  const config = useMemo(() => ({
     focus: energyLevel === "low" ? 15 * 60 : energyLevel === "hyperfocus" ? 50 * 60 : 25 * 60,
     shortBreak: energyLevel === "low" ? 5 * 60 : 5 * 60,
     longBreak: 15 * 60,
     sessionsBeforeLong: 4,
-  };
+  }), [energyLevel]);
+
+  // Sync timeLeft when energyLevel changes while timer is NOT running
+  useEffect(() => {
+    if (!isRunning) {
+      setTimeLeft(config.focus);
+      setPhase("focus");
+    }
+  }, [config.focus, isRunning]);
 
   const phaseDuration = useCallback(() => {
     switch (phase) {
@@ -180,7 +187,7 @@ const PomodoroTimer = ({ energyLevel = "balanced", onSessionComplete }: Pomodoro
         soundNodesRef.current = null;
       }
     };
-  }, [ambientSound, isRunning]);
+  }, [ambientSound, isRunning, volume]);
 
   // Live volume adjustment
   useEffect(() => {
@@ -206,6 +213,14 @@ const PomodoroTimer = ({ energyLevel = "balanced", onSessionComplete }: Pomodoro
           started_at: startTimeRef.current?.toISOString() || new Date().toISOString(),
           ended_at: new Date().toISOString(),
         });
+        
+        const focusXp = Math.round(config.focus / 60) * 2; // 2 XP per minute
+        await awardUserXp({
+          userId: user.id,
+          amount: focusXp,
+          source: "focus_session",
+          sourceId: startTimeRef.current?.toISOString() ?? `${Date.now()}`,
+        });
       }
 
       // Adaptive: after 4 sessions, long break
@@ -220,22 +235,11 @@ const PomodoroTimer = ({ energyLevel = "balanced", onSessionComplete }: Pomodoro
     } else {
       // Returning from break — award bonus XP if activity was done
       if (breakActivityDone && user) {
-        const { data: xpData } = await supabase
-          .from("user_xp")
-          .select("total_xp, level")
-          .eq("user_id", user.id)
-          .maybeSingle();
-        if (xpData) {
-          const newXp = xpData.total_xp + 20;
-          await supabase.from("user_xp").update({
-            total_xp: newXp,
-            level: Math.floor(newXp / 500) + 1,
-          }).eq("user_id", user.id);
-        }
-        await supabase.from("xp_log").insert({
-          user_id: user.id,
+        await awardUserXp({
+          userId: user.id,
+          amount: 20,
           source: "dopamine_break_bonus",
-          xp_amount: 20,
+          sourceId: `${Date.now()}`,
         });
         toast({
           title: "🎉 +20 XP Bonus!",

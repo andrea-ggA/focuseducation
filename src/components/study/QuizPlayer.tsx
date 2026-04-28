@@ -8,6 +8,8 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { playCorrectSound, playWrongSound, playCompletionSound, fireCorrectConfetti, fireCompletionConfetti, playComboUpSound, playHyperActivateSound, playComboBreakSound } from "@/lib/soundEffects";
 import QuizQuestionFeedback from "@/components/study/QuizQuestionFeedback";
+import { awardUserXp, recordQuestionProgress, recordQuizAttempt } from "@/lib/progression";
+import { getLocalDateString } from "@/lib/datetime";
 
 interface Question {
   id: string;
@@ -65,8 +67,9 @@ const QuizPlayer = ({ quizId, isGamified = false, selectedTopics, customTimerSec
 
   const useTimed = isGamified || !!customTimerSeconds;
   const extraTimeBonus = activePowerUps.extra_time ? 15 : 0;
-  const getTimerForQuestion = (q: Question) =>
-    (customTimerSeconds || (isGamified ? (q.time_limit_seconds || 30) : 0)) + extraTimeBonus;
+  const getTimerForQuestion = useCallback((q: Question) =>
+    (customTimerSeconds || (isGamified ? (q.time_limit_seconds || 30) : 0)) + extraTimeBonus,
+  [customTimerSeconds, extraTimeBonus, isGamified]);
 
   // Load active power-ups
   useEffect(() => {
@@ -124,14 +127,7 @@ const QuizPlayer = ({ quizId, isGamified = false, selectedTopics, customTimerSec
       setLoading(false);
     };
     fetchQuiz();
-  }, [quizId, selectedTopics, isGamified, customTimerSeconds]);
-
-  useEffect(() => {
-    if (!useTimed || showResult || finished || loading || questions.length === 0) return;
-    if (timeLeft <= 0) { handleAnswer(-1); return; }
-    const t = setTimeout(() => setTimeLeft((p) => p - 1), 1000);
-    return () => clearTimeout(t);
-  }, [timeLeft, useTimed, showResult, finished, loading, questions.length]);
+  }, [quizId, selectedTopics, useTimed, getTimerForQuestion]);
 
   // Combo tier helpers (gamified only)
   const getComboTier = (c: number) => {
@@ -215,27 +211,31 @@ const QuizPlayer = ({ quizId, isGamified = false, selectedTopics, customTimerSec
     }
 
     if (user && q.id) {
-      supabase.from("user_question_progress").insert({
-        user_id: user.id, quiz_id: quizId, question_id: q.id,
-        selected_answer: index, is_correct: isCorrect,
-        time_taken_seconds: useTimed ? (getTimerForQuestion(q) - timeLeft) : null,
-      }).then(() => {});
+      recordQuestionProgress({
+        userId: user.id,
+        quizId,
+        questionId: q.id,
+        selectedAnswer: index,
+        isCorrect,
+        timeTakenSeconds: useTimed ? (getTimerForQuestion(q) - timeLeft) : null,
+      }).catch((err) => {
+        console.error("[QuizPlayer] Failed to record question progress:", err);
+      });
 
-      const today = new Date().toISOString().split("T")[0];
-      supabase.from("daily_objectives")
-        .select("id, questions_completed")
-        .eq("user_id", user.id)
-        .eq("objective_date", today)
-        .maybeSingle()
-        .then(({ data }) => {
-          if (data) {
-            supabase.from("daily_objectives").update({
-              questions_completed: data.questions_completed + 1,
-            }).eq("id", data.id).then(() => {});
-          }
-        });
+      const today = getLocalDateString();
+      supabase.rpc("increment_daily_questions_completed", {
+        _user_id: user.id,
+        _objective_date: today,
+      }).then(() => {});
     }
-  }, [showResult, questions, currentIndex, combo, isGamified, timeLeft, useTimed, user, quizId]);
+  }, [showResult, questions, currentIndex, combo, isGamified, timeLeft, useTimed, user, quizId, getTimerForQuestion]);
+
+  useEffect(() => {
+    if (!useTimed || showResult || finished || loading || questions.length === 0) return;
+    if (timeLeft <= 0) { handleAnswer(-1); return; }
+    const t = setTimeout(() => setTimeLeft((p) => p - 1), 1000);
+    return () => clearTimeout(t);
+  }, [timeLeft, useTimed, showResult, finished, loading, questions.length, handleAnswer]);
 
   // Consume power-ups at quiz end
   const consumePowerUps = async () => {
@@ -275,7 +275,8 @@ const QuizPlayer = ({ quizId, isGamified = false, selectedTopics, customTimerSec
         if (activePowerUps.xp_boost_2x) xpMultiplier *= 2;
         if (activePowerUps.streak_multiplier && streakCount >= 3) xpMultiplier *= 1.5;
 
-        let xpEarned = Math.round(score * xpMultiplier);
+        const baseXpEarned = Math.round(score * xpMultiplier);
+        let finalXpEarned = baseXpEarned;
 
         // XP Betting logic
         const accuracy = questions.length > 0 ? correctCount / questions.length : 0;
@@ -283,32 +284,37 @@ const QuizPlayer = ({ quizId, isGamified = false, selectedTopics, customTimerSec
         if (xpBet && xpBet > 0) {
           if (accuracy >= 0.8) {
             betResult = xpBet * 2; // Win: double the bet
-            xpEarned += betResult;
           } else {
             betResult = -xpBet; // Lose: subtract bet
-            xpEarned = Math.max(0, xpEarned + betResult);
           }
         }
+        finalXpEarned = Math.max(0, baseXpEarned + betResult);
 
-        await supabase.from("quiz_attempts").insert({
-          user_id: user.id, quiz_id: quizId, score, total_points: totalPoints,
-          correct_answers: correctCount, total_answered: questions.length,
-          time_taken_seconds: timeTaken, xp_earned: xpEarned,
-          xp_bet: xpBet || null,
+        await recordQuizAttempt({
+          userId: user.id,
+          quizId,
+          score,
+          totalPoints,
+          correctAnswers: correctCount,
+          totalAnswered: questions.length,
+          timeTakenSeconds: timeTaken,
+          xpEarned: finalXpEarned,
+          xpBet: xpBet || null,
         });
-        if (xpEarned > 0 || betResult < 0) {
-          const { data: xpData } = await supabase.from("user_xp").select("*").eq("user_id", user.id).maybeSingle();
-          if (xpData) {
-            const newXp = Math.max(0, xpData.total_xp + xpEarned + (betResult < 0 ? betResult : 0));
-            await supabase.from("user_xp").update({
-              total_xp: newXp, quizzes_completed: xpData.quizzes_completed + 1,
-              perfect_scores: correctCount === questions.length ? xpData.perfect_scores + 1 : xpData.perfect_scores,
-              level: Math.floor(newXp / 500) + 1,
-            }).eq("user_id", user.id);
-          } else {
-            await supabase.from("user_xp").insert({ user_id: user.id, total_xp: Math.max(0, xpEarned), quizzes_completed: 1, level: 1 });
+        if (finalXpEarned > 0 || betResult !== 0) {
+          try {
+            await awardUserXp({
+              userId: user.id,
+              amount: finalXpEarned,
+              source: isGamified ? "gamified_quiz" : "standard_quiz",
+              sourceId: quizId,
+              dedupeBySourceId: true,
+              quizzesCompletedDelta: 1,
+              perfectScoresDelta: correctCount === questions.length ? 1 : 0,
+            });
+          } catch (err) {
+            console.error("[QuizPlayer] XP write failed:", err);
           }
-          await supabase.from("xp_log").insert({ user_id: user.id, source: isGamified ? "gamified_quiz" : "standard_quiz", xp_amount: xpEarned + betResult, source_id: quizId });
         }
 
         // Consume active power-ups after quiz
@@ -345,10 +351,11 @@ const QuizPlayer = ({ quizId, isGamified = false, selectedTopics, customTimerSec
     const timeTaken = Math.round((Date.now() - startTime) / 1000);
     const minutes = Math.floor(timeTaken / 60);
     const seconds = timeTaken % 60;
-    const xpEarned = Math.round(score * getXpMultiplier());
+    const baseXpEarned = Math.round(score * getXpMultiplier());
     const hasAnyPowerUp = activePowerUps.xp_boost_2x || activePowerUps.extra_time || (activePowerUps.streak_multiplier && streakCount >= 3);
     const betWon = xpBet ? percentage >= 80 : false;
     const betResult = xpBet ? (betWon ? xpBet * 2 : -xpBet) : 0;
+    const xpEarned = Math.max(0, baseXpEarned + betResult);
 
     return (
       <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="text-center py-8">

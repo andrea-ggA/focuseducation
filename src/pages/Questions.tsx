@@ -15,6 +15,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { motion, AnimatePresence } from "framer-motion";
 import AppHeader from "@/components/AppHeader";
+import { awardUserXp, recordQuestionProgress, recordQuizAttempt } from "@/lib/progression";
 
 type FilterType = "all" | "not_started" | "in_progress" | "completed";
 type StatsFilter = "all" | "ready" | "to_study" | "to_review" | "new" | "reread";
@@ -54,9 +55,23 @@ interface QuestionData {
   source_reference?: string | null;
 }
 
+interface QuizQuestionRow {
+  id: string;
+  question: string;
+  options: string[];
+  correct_answer: number;
+  explanation: string;
+  topic: string | null;
+  points: number;
+  time_limit_seconds: number;
+  quiz_id: string;
+  source_reference?: string | null;
+}
+
 interface AnswerRecord {
   question_id: string;
   is_correct: boolean;
+  answered_at?: string;
 }
 
 type View = "documents" | "chapters" | "quiz";
@@ -87,6 +102,16 @@ const Questions = () => {
   const [quizTitle, setQuizTitle] = useState("");
   const [startTime, setStartTime] = useState(0);
   const [selectedTopicIndices, setSelectedTopicIndices] = useState<Set<number>>(new Set());
+  const latestAnswersByQuestion = useMemo(() => {
+    const sorted = [...userAnswers].sort((a, b) => {
+      const aTime = a.answered_at ? new Date(a.answered_at).getTime() : 0;
+      const bTime = b.answered_at ? new Date(b.answered_at).getTime() : 0;
+      return aTime - bTime;
+    });
+    const map = new Map<string, boolean>();
+    for (const answer of sorted) map.set(answer.question_id, answer.is_correct);
+    return map;
+  }, [userAnswers]);
 
   // Fetch all documents with their quizzes
   useEffect(() => {
@@ -107,7 +132,7 @@ const Questions = () => {
 
       const { data: progress } = await supabase
         .from("user_question_progress")
-        .select("question_id, is_correct")
+        .select("question_id, is_correct, answered_at")
         .eq("user_id", user.id);
 
       setUserAnswers(progress || []);
@@ -141,7 +166,7 @@ const Questions = () => {
     const quizIds = doc.quizzes.map(q => q.id);
     
     // Fetch ALL questions (handle >1000 with pagination)
-    let allQuestions: any[] = [];
+    const allQuestions: QuizQuestionRow[] = [];
     for (const qid of quizIds) {
       let from = 0;
       const PAGE = 1000;
@@ -166,8 +191,12 @@ const Questions = () => {
       topicMap.get(topic)!.push({ ...q, options: q.options as string[], topic });
     });
 
-    const answeredSet = new Set(userAnswers.map(a => a.question_id));
-    const correctSet = new Set(userAnswers.filter(a => a.is_correct).map(a => a.question_id));
+    const answeredSet = new Set(latestAnswersByQuestion.keys());
+    const correctSet = new Set(
+      Array.from(latestAnswersByQuestion.entries())
+        .filter(([, isCorrect]) => isCorrect)
+        .map(([questionId]) => questionId)
+    );
 
     const groups: TopicGroup[] = Array.from(topicMap.entries()).map(([topic, qs]) => ({
       topic, questions: qs, total: qs.length,
@@ -191,7 +220,7 @@ const Questions = () => {
   // Statistics calculations
   const stats = useMemo(() => {
     const allQs = topicGroups.flatMap(g => g.questions);
-    const answeredMap = new Map(userAnswers.map(a => [a.question_id, a.is_correct]));
+    const answeredMap = latestAnswersByQuestion;
 
     const ready = allQs.filter(q => answeredMap.get(q.id) === true).length; // Answered correctly
     const wrong = allQs.filter(q => answeredMap.get(q.id) === false); // Answered wrong = "rileggi"
@@ -209,7 +238,7 @@ const Questions = () => {
       newQ: notAnswered.length, // 🆕 Nuove
       reread: wrong.length, // 📕 Rileggi (wrong answers)
     };
-  }, [topicGroups, userAnswers]);
+  }, [topicGroups, latestAnswersByQuestion]);
 
   const totalQuestions = useMemo(() => topicGroups.reduce((s, g) => s + g.total, 0), [topicGroups]);
   const totalAnswered = useMemo(() => topicGroups.reduce((s, g) => s + g.answered, 0), [topicGroups]);
@@ -225,14 +254,28 @@ const Questions = () => {
     if (filter === "not_started") result = result.filter(g => g.answered === 0);
     else if (filter === "in_progress") result = result.filter(g => g.answered > 0 && g.answered < g.total);
     else if (filter === "completed") result = result.filter(g => g.answered >= g.total);
+    if (statsFilter !== "all") {
+      result = result.filter((group) => {
+        const answers = group.questions.map((q) => latestAnswersByQuestion.get(q.id));
+        if (statsFilter === "ready") return answers.length > 0 && answers.every((a) => a === true);
+        if (statsFilter === "to_study" || statsFilter === "new") return answers.some((a) => a === undefined);
+        if (statsFilter === "to_review") return answers.some((a) => a === true);
+        if (statsFilter === "reread") return answers.some((a) => a === false);
+        return true;
+      });
+    }
     return result;
-  }, [topicGroups, search, filter]);
+  }, [topicGroups, search, filter, statsFilter, latestAnswersByQuestion]);
 
   const startTopicQuiz = (topics: TopicGroup[], onlyWrong = false) => {
     let allQuestions = topics.flatMap(t => t.questions);
     
     if (onlyWrong) {
-      const wrongSet = new Set(userAnswers.filter(a => !a.is_correct).map(a => a.question_id));
+      const wrongSet = new Set(
+        Array.from(latestAnswersByQuestion.entries())
+          .filter(([, isCorrect]) => !isCorrect)
+          .map(([questionId]) => questionId)
+      );
       allQuestions = allQuestions.filter(q => wrongSet.has(q.id));
     }
     
@@ -263,16 +306,22 @@ const Questions = () => {
     }
 
     if (user) {
-      await supabase.from("user_question_progress").insert({
-        user_id: user.id, question_id: q.id, quiz_id: q.quiz_id,
-        is_correct: isCorrect, selected_answer: index,
+      await recordQuestionProgress({
+        userId: user.id,
+        questionId: q.id,
+        quizId: q.quiz_id,
+        selectedAnswer: index,
+        isCorrect,
       });
       if (isCorrect) {
-        await supabase.from("xp_log").insert({
-          user_id: user.id, xp_amount: q.points, source: "question", source_id: q.id,
+        await awardUserXp({
+          userId: user.id,
+          amount: q.points,
+          source: "question",
+          sourceId: q.id,
         });
       }
-      setUserAnswers(prev => [...prev, { question_id: q.id, is_correct: isCorrect }]);
+      setUserAnswers(prev => [...prev, { question_id: q.id, is_correct: isCorrect, answered_at: new Date().toISOString() }]);
     }
   }, [showResult, quizQuestions, currentIndex, user]);
 
@@ -283,19 +332,23 @@ const Questions = () => {
       // Prima mancava questo → Statistics non mostrava i quiz completati in questa pagina
       if (user && quizQuestions.length > 0) {
         const quizId = quizQuestions[0]?.quiz_id;
+        if (!quizId) return;
         const timeTaken = startTime > 0 ? Math.round((Date.now() - startTime) / 1000) : 0;
-        await supabase.from("quiz_attempts").insert({
-          user_id: user.id,
-          quiz_id: quizId,
-          score,
-          total_points: quizQuestions.reduce((s, q) => s + (q.points || 10), 0),
-          correct_answers: correctCount,
-          total_answered: quizQuestions.length,
-          time_taken_seconds: timeTaken,
-          xp_earned: score,
-        }).then(({ error }) => {
-          if (error) console.warn("[Questions] quiz_attempts insert failed:", error.message);
-        });
+        try {
+          await recordQuizAttempt({
+            userId: user.id,
+            quizId,
+            score,
+            totalPoints: quizQuestions.reduce((s, q) => s + (q.points || 10), 0),
+            correctAnswers: correctCount,
+            totalAnswered: quizQuestions.length,
+            timeTakenSeconds: timeTaken,
+            xpEarned: score,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn("[Questions] quiz_attempts insert failed:", message);
+        }
       }
       return;
     }
@@ -306,8 +359,12 @@ const Questions = () => {
 
   const backToChapters = () => {
     setView("chapters");
-    const answeredSet = new Set(userAnswers.map(a => a.question_id));
-    const correctSet = new Set(userAnswers.filter(a => a.is_correct).map(a => a.question_id));
+    const answeredSet = new Set(latestAnswersByQuestion.keys());
+    const correctSet = new Set(
+      Array.from(latestAnswersByQuestion.entries())
+        .filter(([, isCorrect]) => isCorrect)
+        .map(([questionId]) => questionId)
+    );
     setTopicGroups(prev => prev.map(g => ({
       ...g,
       answered: g.questions.filter(q => answeredSet.has(q.id)).length,
@@ -582,7 +639,7 @@ const Questions = () => {
                   const percentage = group.total > 0 ? Math.round((group.answered / group.total) * 100) : 0;
                   const isSelected = selectedTopicIndices.has(realIdx);
                   const wrongCount = group.questions.filter(q => 
-                    userAnswers.some(a => a.question_id === q.id && !a.is_correct)
+                    latestAnswersByQuestion.get(q.id) === false
                   ).length;
 
                   return (

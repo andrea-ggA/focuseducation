@@ -18,6 +18,19 @@ export interface SM2Result {
   nextReviewAt:      Date;
 }
 
+const RELEARNING_DELAY_MINUTES = 10;
+
+function computeIntervalFromRepetition(repetitions: number, easinessFactor: number): number {
+  if (repetitions <= 1) return 1;
+  if (repetitions === 2) return 6;
+
+  let interval = 6;
+  for (let i = 3; i <= repetitions; i += 1) {
+    interval = Math.max(interval + 1, Math.round(interval * easinessFactor));
+  }
+  return interval;
+}
+
 /**
  * @param quality        0 | 2 | 4 | 5
  * @param repetitions    consecutive successful recalls (= mastery_level in DB)
@@ -28,15 +41,8 @@ export function sm2(
   quality:        number,
   repetitions:    number,
   easinessFactor: number = 2.5,
-  lastReviewAt?:  Date | null,
 ): SM2Result {
   const now = new Date();
-
-  let previousIntervalDays = 1;
-  if (lastReviewAt) {
-    const diff = (now.getTime() - new Date(lastReviewAt).getTime()) / 86_400_000;
-    previousIntervalDays = Math.max(1, Math.round(diff));
-  }
 
   // Update EF using Wozniak 1987 formula
   const newEF = Math.max(
@@ -45,20 +51,20 @@ export function sm2(
   );
 
   let newRepetitions: number;
-  let intervalDays:   number;
+  let nextReview: Date;
 
   if (quality < 3) {
-    // Wrong answer: reset repetitions but keep (degraded) EF
+    // Wrong answer: enter relearning with a short retry window instead of
+    // making the card instantly due again.
     newRepetitions = 0;
-    intervalDays   = quality === 0 ? 0 : 1;
+    nextReview = new Date(
+      now.getTime() + (quality === 0 ? RELEARNING_DELAY_MINUTES * 60_000 : 86_400_000),
+    );
   } else {
     newRepetitions = repetitions + 1;
-    if (newRepetitions === 1)      intervalDays = 1;
-    else if (newRepetitions === 2) intervalDays = 6;
-    else                           intervalDays = Math.round(previousIntervalDays * newEF);
+    const intervalDays = computeIntervalFromRepetition(newRepetitions, newEF);
+    nextReview = new Date(now.getTime() + intervalDays * 86_400_000);
   }
-
-  const nextReview = new Date(now.getTime() + intervalDays * 86_400_000);
 
   return {
     newMasteryLevel:   Math.min(newRepetitions, 5),

@@ -6,6 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle2, XCircle, ArrowRight, Trophy, RotateCcw, Sparkles, BookOpen } from "lucide-react";
+import { isSafeShareToken } from "@/lib/security";
 
 interface Question {
   id: string;
@@ -35,7 +36,11 @@ const SharedQuiz = () => {
   const [creatorName, setCreatorName] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token) return;
+    if (!isSafeShareToken(token)) {
+      setNotFound(true);
+      setLoading(false);
+      return;
+    }
     const fetchQuiz = async () => {
       const { data: quiz } = await supabase
         .from("quizzes")

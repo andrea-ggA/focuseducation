@@ -17,6 +17,16 @@ interface LeaderboardEntry {
   streak_count: number;
 }
 
+interface LeaderboardViewRow {
+  user_id: string;
+  total_xp: number;
+  level: number;
+  quizzes_completed: number;
+  full_name: string | null;
+  streak_count: number | null;
+  avatar_url?: string | null;
+}
+
 const PRIZES = [
   { rank: 1, icon: "👑", label: "1° posto", prize: "1 mese Hyperfocus Master gratis", color: "from-yellow-400 to-amber-500" },
   { rank: 2, icon: "🥈", label: "2° posto", prize: "50% sconto Focus Pro", color: "from-gray-300 to-gray-400" },
@@ -40,7 +50,7 @@ const Leaderboard = () => {
 
       if (!leaderboardData) { setLoading(false); return; }
 
-      const combined: LeaderboardEntry[] = (leaderboardData as any[]).map(x => ({
+      const combined: LeaderboardEntry[] = (leaderboardData as LeaderboardViewRow[]).map((x) => ({
         user_id: x.user_id,
         total_xp: x.total_xp,
         level: x.level,

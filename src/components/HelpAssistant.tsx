@@ -3,6 +3,8 @@ import { MessageCircle, X, Send, Loader2, Bot, Ticket, Bug, HelpCircle, CreditCa
 import { Button } from "@/components/ui/button";
 import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { consumeOpenAiSseStream } from "@/lib/sse";
 
 interface Message {
   role: "user" | "assistant";
@@ -76,13 +78,16 @@ const HelpAssistant = () => {
     setIsLoading(true);
 
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error("Sessione non valida");
       const resp = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-tutor`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+            Authorization: `Bearer ${session.access_token}`,
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
           },
           body: JSON.stringify({
             messages: [
@@ -95,41 +100,17 @@ const HelpAssistant = () => {
       );
 
       if (!resp.ok || !resp.body) throw new Error("Failed");
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
       let fullText = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        let newlineIndex: number;
-        while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-          let line = buffer.slice(0, newlineIndex);
-          buffer = buffer.slice(newlineIndex + 1);
-          if (line.endsWith("\r")) line = line.slice(0, -1);
-          if (!line.startsWith("data: ")) continue;
-          const jsonStr = line.slice(6).trim();
-          if (jsonStr === "[DONE]") break;
-          try {
-            const parsed = JSON.parse(jsonStr);
-            const content = parsed.choices?.[0]?.delta?.content;
-            if (content) {
-              fullText += content;
-              setMessages((prev) => {
-                const last = prev[prev.length - 1];
-                if (last?.role === "assistant" && prev.length > newMessages.length) {
-                  return prev.map((m, i) => i === prev.length - 1 ? { ...m, content: fullText } : m);
-                }
-                return [...prev, { role: "assistant", content: fullText }];
-              });
-            }
-          } catch {}
-        }
-      }
+      await consumeOpenAiSseStream(resp, (content) => {
+        fullText += content;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === "assistant" && prev.length > newMessages.length) {
+            return prev.map((m, i) => i === prev.length - 1 ? { ...m, content: fullText } : m);
+          }
+          return [...prev, { role: "assistant", content: fullText }];
+        });
+      });
     } catch {
       setMessages((prev) => [...prev, { role: "assistant", content: "Mi dispiace, c'è stato un errore. Riprova tra poco oppure apri un ticket dalla sezione Profilo > Supporto!" }]);
     } finally {

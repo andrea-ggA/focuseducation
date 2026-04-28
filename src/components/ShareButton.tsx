@@ -19,6 +19,7 @@ const TABLE_MAP: Record<ShareableType, string> = {
   flashcard_deck: "flashcard_decks",
   summary: "generated_content",
 };
+type ShareableTable = typeof TABLE_MAP[ShareableType];
 
 const ROUTE_MAP: Record<ShareableType, string> = {
   quiz: "/quiz/s/",
@@ -39,9 +40,10 @@ const ShareButton = forwardRef<HTMLButtonElement, ShareButtonProps>(
 
         if (!token) {
           token = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+          const table = TABLE_MAP[type] as ShareableTable;
           const { error } = await supabase
-            .from(TABLE_MAP[type] as any)
-            .update({ share_token: token } as any)
+            .from(table)
+            .update({ share_token: token })
             .eq("id", id);
 
           if (error) {

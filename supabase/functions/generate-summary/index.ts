@@ -8,7 +8,18 @@ const corsHeaders = {
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
-async function callAI(apiKey: string, messages: any[], model = "gemini-2.5-flash", retries = 3, maxTokens = 65536): Promise<any> {
+interface ErrorWithStatus {
+  status?: number;
+}
+
+type ChatRole = "system" | "user" | "assistant";
+type ChatVisionPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+type ChatMessage = { role: ChatRole; content: string | ChatVisionPart[] };
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
+async function callAI(apiKey: string, messages: ChatMessage[], model = "gemini-2.5-flash", retries = 3, maxTokens = 65536): Promise<Record<string, unknown>> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
@@ -24,13 +35,15 @@ async function callAI(apiKey: string, messages: any[], model = "gemini-2.5-flash
         if (attempt < retries) { await sleep(2000 * (attempt + 1)); continue; }
         throw new Error("AI generation failed: " + res.status);
       }
-      return await res.json();
-    } catch (e: any) {
-      if (e.status === 402) throw e;
+      return await res.json() as Record<string, unknown>;
+    } catch (e: unknown) {
+      const errorWithStatus = e as ErrorWithStatus;
+      if (errorWithStatus.status === 402) throw e;
       if (attempt < retries) { await sleep(2000 * (attempt + 1)); continue; }
       throw e;
     }
   }
+  throw new Error("AI request failed");
 }
 
 Deno.serve(async (req) => {
@@ -87,7 +100,8 @@ Deno.serve(async (req) => {
         status: "processing", progress_message: "Avvio in background…",
       }).eq("id", jobId);
 
-      (globalThis as any).EdgeRuntime?.waitUntil((async () => {
+      const edgeRuntime = globalThis as typeof globalThis & { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } };
+      edgeRuntime.EdgeRuntime?.waitUntil?.((async () => {
         try {
           const r = await fetch(`${supabaseUrl}/functions/v1/generate-summary`, {
             method: "POST",
@@ -97,9 +111,9 @@ Deno.serve(async (req) => {
           if (!r.ok && jobId) await supabase.from("generation_jobs").update({
             status: "error", error: `Errore avvio (${r.status})`, completed_at: new Date().toISOString(),
           }).eq("id", jobId);
-        } catch (err: any) {
+        } catch (err: unknown) {
           if (jobId) await supabase.from("generation_jobs").update({
-            status: "error", error: err?.message || "Errore", completed_at: new Date().toISOString(),
+            status: "error", error: getErrorMessage(err, "Errore"), completed_at: new Date().toISOString(),
           }).eq("id", jobId);
         }
       })());
@@ -162,7 +176,7 @@ REGOLE:
     if (hasImages && !cleanedContent) {
       if (jobId) await supabase.from("generation_jobs").update({ progress_message: "Analisi immagini…" }).eq("id", jobId);
 
-      const parts: any[] = [{ type: "text", text: `${formatInstructions[format]}\n\nAnalizza le immagini e genera il ${FORMAT_NAMES[format]}. IGNORA numeri di pagina, intestazioni, URL.\nGenera nella lingua del testo visibile. Default: italiano.` }];
+      const parts: ChatVisionPart[] = [{ type: "text", text: `${formatInstructions[format]}\n\nAnalizza le immagini e genera il ${FORMAT_NAMES[format]}. IGNORA numeri di pagina, intestazioni, URL.\nGenera nella lingua del testo visibile. Default: italiano.` }];
       for (const url of images) parts.push({ type: "image_url", image_url: { url } });
 
       const aiData = await callAI(GEMINI_API_KEY, [
@@ -227,8 +241,8 @@ REGOLE:
             const result = aiData.choices?.[0]?.message?.content || "";
             console.log(`Chunk ${chunkNum}/${chunks.length}: ${result.length} chars`);
             return { idx, content: result };
-          } catch (err: any) {
-            console.error(`Chunk ${chunkNum} failed:`, err.message);
+          } catch (err: unknown) {
+            console.error(`Chunk ${chunkNum} failed:`, getErrorMessage(err, "Errore sconosciuto"));
             return { idx, content: "" };
           }
         });
@@ -313,19 +327,20 @@ REGOLE:
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
 
-  } catch (e: any) {
+  } catch (e: unknown) {
+    const errorWithStatus = e as ErrorWithStatus;
     console.error("generate-summary error:", e);
     try {
       const body = await req.clone().json().catch(() => ({}));
       if (body.jobId) {
         const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
         await sb.from("generation_jobs").update({
-          status: "error", error: e.message || "Errore", completed_at: new Date().toISOString(),
+          status: "error", error: getErrorMessage(e, "Errore"), completed_at: new Date().toISOString(),
         }).eq("id", body.jobId);
       }
     } catch {}
-    return new Response(JSON.stringify({ error: e.message || "Unknown error" }), {
-      status: e.status || 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    return new Response(JSON.stringify({ error: getErrorMessage(e, "Unknown error") }), {
+      status: errorWithStatus.status || 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 });

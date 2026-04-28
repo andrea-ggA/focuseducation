@@ -1,4 +1,5 @@
 import { useReducer } from "react";
+import type { Json } from "@/integrations/supabase/types";
 
 export type StudyView =
   | "home"
@@ -17,14 +18,14 @@ export interface StudyState {
   selectedTopics:     string[] | null;
   customTimerSeconds?: number;
   xpBet?:             number;
-  mindMapData:        { nodes: any[]; edges: any[] } | null;
+  mindMapData:        { nodes: Json[]; edges: Json[] } | null;
   summaryData:        { content: string; format: string; title: string } | null;
 }
 
 export type StudyAction =
   | { type: "UPLOAD_QUIZ";       quizId: string; gamified: boolean }
   | { type: "UPLOAD_FLASHCARDS"; deckId: string }
-  | { type: "UPLOAD_MINDMAP";    nodes: any[];   edges: any[] }
+  | { type: "UPLOAD_MINDMAP";    nodes: Json[];   edges: Json[] }
   | { type: "UPLOAD_SUMMARY";    content: string; format: string; title: string }
   | { type: "START_QUIZ";        topics: string[] | null; timer?: number; bet?: number }
   | { type: "START_FLASHCARDS";  topics: string[] | null }
@@ -44,9 +45,21 @@ const initial: StudyState = {
 function reducer(state: StudyState, action: StudyAction): StudyState {
   switch (action.type) {
     case "UPLOAD_QUIZ":
-      return { ...state, view: "topic_select_quiz", activeQuizId: action.quizId, activeQuizGamified: action.gamified };
+      return {
+        ...state,
+        view: "topic_select_quiz",
+        activeQuizId: action.quizId,
+        activeQuizGamified: action.gamified,
+        activeDeckId: null,
+      };
     case "UPLOAD_FLASHCARDS":
-      return { ...state, view: "topic_select_flashcards", activeDeckId: action.deckId };
+      return {
+        ...state,
+        view: "topic_select_flashcards",
+        activeDeckId: action.deckId,
+        activeQuizId: null,
+        activeQuizGamified: false,
+      };
     case "UPLOAD_MINDMAP":
       return { ...state, view: "mindmap", mindMapData: { nodes: action.nodes, edges: action.edges } };
     case "UPLOAD_SUMMARY":
@@ -58,6 +71,12 @@ function reducer(state: StudyState, action: StudyAction): StudyState {
     case "BACK":
       return initial;
     case "BACK_TO_TOPICS":
+      if (state.view === "quiz" && state.activeQuizId) {
+        return { ...state, view: "topic_select_quiz" };
+      }
+      if (state.view === "flashcards" && state.activeDeckId) {
+        return { ...state, view: "topic_select_flashcards" };
+      }
       return {
         ...state,
         view: state.activeQuizId

@@ -21,6 +21,22 @@ const corsHeaders = {
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  const internalSecret = Deno.env.get("INTERNAL_FUNCTION_SECRET");
+  const providedSecret = req.headers.get("x-internal-secret");
+  if (!internalSecret || providedSecret !== internalSecret) {
+    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
@@ -50,6 +66,7 @@ serve(async (req) => {
 
       if (authUser?.user?.email) {
         await supabase.functions.invoke("send-email", {
+          headers: { "x-internal-secret": internalSecret },
           body: {
             type: "trial_expiring",
             to:   authUser.user.email,
@@ -88,6 +105,7 @@ serve(async (req) => {
 
       if (authUser?.user?.email) {
         await supabase.functions.invoke("send-email", {
+          headers: { "x-internal-secret": internalSecret },
           body: {
             type: "trial_expired",
             to:   authUser.user.email,

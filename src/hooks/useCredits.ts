@@ -43,8 +43,13 @@ export const useCredits = () => {
   const [loading, setLoading]                 = useState(true);
   const lastPlanRef                           = useRef<string | undefined>(undefined);
 
-  const fetchCredits = useCallback(async () => {
-    if (!user) return;
+  const fetchCredits = useCallback(async (): Promise<UserCredits | null> => {
+    if (!user) {
+      setCredits(null);
+      lastPlanRef.current = undefined;
+      setLoading(false);
+      return null;
+    }
 
     const planKey          = getPlanKey(subscription?.plan_name);
     const monthlyAllowance = PLAN_CREDITS[planKey] ?? PLAN_CREDITS.free;
@@ -87,15 +92,18 @@ export const useCredits = () => {
               description: `Upgrade a ${subscription?.plan_name}: +${bonus} NeuroCredits`,
             } satisfies TxInsert);
 
-            setCredits({ balance: newBalance, rollover_balance: data.rollover_balance });
+            const result = { balance: newBalance, rollover_balance: data.rollover_balance };
+            setCredits(result);
             lastPlanRef.current = planKey;
             setLoading(false);
-            return;
+            return result;
           }
         }
 
-        setCredits({ balance: data.balance, rollover_balance: data.rollover_balance });
+        const result = { balance: data.balance, rollover_balance: data.rollover_balance };
+        setCredits(result);
         lastPlanRef.current = planKey;
+        return result;
       } else {
         // First-time user: use upsert to prevent duplicate key error if two tabs
         // mount simultaneously (race condition fix)
@@ -103,11 +111,14 @@ export const useCredits = () => {
           { user_id: user.id, balance: monthlyAllowance, rollover_balance: 0 },
           { onConflict: "user_id", ignoreDuplicates: true }
         );
-        setCredits({ balance: monthlyAllowance, rollover_balance: 0 });
+        const result = { balance: monthlyAllowance, rollover_balance: 0 };
+        setCredits(result);
         lastPlanRef.current = planKey;
+        return result;
       }
     } catch (err) {
       console.error("[useCredits] fetchCredits error:", err);
+      return null;
     } finally {
       setLoading(false);
     }
@@ -120,9 +131,19 @@ export const useCredits = () => {
 
   const spendCredits = useCallback(
     async (action: keyof typeof CREDIT_COSTS): Promise<boolean> => {
-      if (!user || !credits) return false;
+      if (!user) return false;
+      
+      let currentCredits = credits;
+      
+      // Se i crediti stanno caricando o sono null, riprova il fetch una volta
+      if (!currentCredits) {
+        currentCredits = await fetchCredits();
+      }
+      
+      if (!currentCredits) return false;
+
       const cost           = CREDIT_COSTS[action];
-      const totalAvailable = credits.balance + credits.rollover_balance;
+      const totalAvailable = currentCredits.balance + currentCredits.rollover_balance;
       if (totalAvailable < cost) return false;
 
       try {
@@ -152,14 +173,14 @@ export const useCredits = () => {
           return false;
         }
 
-        setCredits({ balance: data.balance, rollover_balance: data.rollover_balance });
+        setCredits({ balance: data.balance, rollover_balance: data.rollover_balance ?? 0 });
         return true;
       } catch (e) {
         console.error("[useCredits] spendCredits failed:", e);
         return false;
       }
     },
-    [user, credits],
+    [user, credits, fetchCredits],
   );
 
   /**

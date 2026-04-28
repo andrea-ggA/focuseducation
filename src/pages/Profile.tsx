@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/integrations/supabase/client";
 import { useSubscription } from "@/hooks/useSubscription";
@@ -67,7 +67,7 @@ const Profile = () => {
       .eq("user_id", user.id).maybeSingle()
       .then(({ data }) => {
         if (data) {
-          setLeaderboardOptIn(!!(data as any).leaderboard_visible);
+          setLeaderboardOptIn(!!(data as LeaderboardVisibilityRow).leaderboard_visible);
         }
       });
   }, [user]);
@@ -85,12 +85,12 @@ const Profile = () => {
     setSavingLeaderboard(true);
     await supabase.from("profiles").update({
       leaderboard_visible: leaderboardOptIn,
-    } as any).eq("user_id", user.id);
+    }).eq("user_id", user.id);
     setSavingLeaderboard(false);
     toast({ title: leaderboardOptIn ? "Ora sei visibile in classifica!" : "Sei stato rimosso dalla classifica." });
   };
 
-  const loadProfile = async () => {
+  const loadProfile = useCallback(async () => {
     if (!user) return;
     const [profileRes, referralRes] = await Promise.all([
       supabase.from("profiles").select("full_name, avatar_url, study_level, streak_count").eq("user_id", user.id).single(),
@@ -103,9 +103,9 @@ const Profile = () => {
       setReferralMax(referralRes.data.max_uses);
       setReferralDiscount(referralRes.data.discount_percent);
     }
-  };
+  }, [user]);
 
-  useEffect(() => { loadProfile(); }, [user]);
+  useEffect(() => { loadProfile(); }, [loadProfile]);
 
   const generateReferralCode = async () => {
     if (!user) return;
@@ -317,3 +317,6 @@ const Profile = () => {
 };
 
 export default Profile;
+  interface LeaderboardVisibilityRow {
+    leaderboard_visible?: boolean | null;
+  }

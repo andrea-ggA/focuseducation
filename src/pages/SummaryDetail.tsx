@@ -9,7 +9,9 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { toast } from "sonner";
 import { useCredits, CREDIT_COSTS } from "@/hooks/useCredits";
-
+import { escapeHtml, isSafeUuid, SAFE_MARKDOWN_COMPONENTS } from "@/lib/security";
+import { getAuthToken, streamTutorChat } from "@/lib/backendApi";
+import { consumeOpenAiSseStream } from "@/lib/sse";
 const FORMAT_LABELS: Record<string, { label: string; emoji: string }> = {
   summary: { label: "Riassunto", emoji: "📄" },
   outline: { label: "Schema", emoji: "🗂️" },
@@ -17,6 +19,7 @@ const FORMAT_LABELS: Record<string, { label: string; emoji: string }> = {
 };
 
 type ChatMsg = { role: "user" | "assistant"; content: string };
+type GeneratedContentPayload = { markdown?: string };
 
 function splitIntoPages(md: string, linesPerPage = 42): string[] {
   if (!md.trim()) return [""];
@@ -45,7 +48,7 @@ function splitIntoPages(md: string, linesPerPage = 42): string[] {
 }
 
 function markdownToHtml(md: string, docTitle: string): string {
-  const lines = md.split("\n");
+  const lines = escapeHtml(md).split("\n");
   const htmlParts: string[] = [];
   let inList = false;
   for (const line of lines) {
@@ -65,9 +68,9 @@ function markdownToHtml(md: string, docTitle: string): string {
     htmlParts.push(`<p>${applyInline(trimmed)}</p>`);
   }
   if (inList) htmlParts.push("</ul>");
-  return `<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><title>${docTitle}</title>
+  return `<!DOCTYPE html><html lang="it"><head><meta charset="utf-8"><title>${escapeHtml(docTitle)}</title>
 <style>@page{margin:2cm 2.5cm;size:A4}*{box-sizing:border-box}body{font-family:'Georgia','Times New Roman',serif;margin:0;padding:2cm 2.5cm;color:#1a1a2e;line-height:1.75;font-size:11.5pt}.doc-title{font-size:20pt;font-weight:800;color:#0f172a;margin-bottom:6px;border-bottom:3px solid #3b82f6;padding-bottom:10px}.doc-meta{font-size:9pt;color:#64748b;margin-bottom:24px}h1{font-size:16pt;font-weight:700;color:#0f172a;margin:28px 0 10px;border-bottom:2px solid #e2e8f0;padding-bottom:4px}h2{font-size:13pt;font-weight:700;color:#1e293b;margin:22px 0 8px}h3{font-size:11.5pt;font-weight:600;color:#334155;margin:16px 0 6px}p{margin:0 0 8px;text-align:justify}ul{margin:4px 0 12px 20px;padding:0}li{margin-bottom:3px}strong{font-weight:700}em{font-style:italic}@media print{body{padding:0}}</style></head><body>
-<div class="doc-title">${docTitle}</div>
+<div class="doc-title">${escapeHtml(docTitle)}</div>
 <div class="doc-meta">Generato con FocusED · ${new Date().toLocaleDateString("it-IT", { year: "numeric", month: "long", day: "numeric" })}</div>
 ${htmlParts.join("\n")}</body></html>`;
 }
@@ -77,66 +80,6 @@ function applyInline(text: string): string {
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/\*(.+?)\*/g, "<em>$1</em>")
     .replace(/`(.+?)`/g, '<code style="background:#f1f5f9;padding:1px 4px;border-radius:3px;font-size:10pt;">$1</code>');
-}
-
-// ── Streaming helper ──
-async function streamDocChat({
-  messages,
-  documentContext,
-  onDelta,
-  onDone,
-  onError,
-}: {
-  messages: ChatMsg[];
-  documentContext: string;
-  onDelta: (t: string) => void;
-  onDone: () => void;
-  onError: (e: string) => void;
-}) {
-  const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-tutor`;
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
-      apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-    },
-    body: JSON.stringify({ messages, documentContext }),
-  });
-
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: "Errore sconosciuto" }));
-    onError(err.error || `Errore ${resp.status}`);
-    return;
-  }
-
-  if (!resp.body) { onError("Stream non disponibile"); return; }
-
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) !== -1) {
-      let line = buf.slice(0, nl);
-      buf = buf.slice(nl + 1);
-      if (line.endsWith("\r")) line = line.slice(0, -1);
-      if (!line.startsWith("data: ")) continue;
-      const json = line.slice(6).trim();
-      if (json === "[DONE]") { onDone(); return; }
-      try {
-        const parsed = JSON.parse(json);
-        const c = parsed.choices?.[0]?.delta?.content;
-        if (c) onDelta(c);
-      } catch { /* partial */ }
-    }
-  }
-  onDone();
 }
 
 const SummaryDetail = () => {
@@ -160,6 +103,11 @@ const SummaryDetail = () => {
 
   useEffect(() => {
     if (!user || !id) return;
+    if (!isSafeUuid(id)) {
+      toast.error("Contenuto non valido");
+      navigate("/libreria?tab=riassunti", { replace: true });
+      return;
+    }
     const load = async () => {
       const { data } = await supabase
         .from("generated_content")
@@ -169,13 +117,13 @@ const SummaryDetail = () => {
         .single();
       if (data) {
         setTitle(data.title || "Senza titolo");
-        setMarkdown((data.content as any)?.markdown || "");
+        setMarkdown(((data.content as GeneratedContentPayload | null) ?? {}).markdown || "");
         setFormat(data.content_type);
       }
       setLoading(false);
     };
     load();
-  }, [user, id]);
+  }, [user, id, navigate]);
 
   const pages = useMemo(() => splitIntoPages(markdown), [markdown]);
   const totalPages = pages.length;
@@ -217,24 +165,37 @@ const SummaryDetail = () => {
     const fullHtml = markdownToHtml(markdown, title);
     const blob = new Blob([fullHtml], { type: "text/html" });
     const url = URL.createObjectURL(blob);
-    const pw = window.open(url, "_blank");
-    if (pw) pw.onload = () => setTimeout(() => pw.print(), 400);
-    URL.revokeObjectURL(url);
+    const pw = window.open(url, "_blank", "noopener,noreferrer");
+    if (pw) {
+      pw.opener = null;
+      pw.onload = () => setTimeout(() => {
+        pw.print();
+        setTimeout(() => URL.revokeObjectURL(url), 5_000);
+      }, 400);
+      pw.onafterprint = () => URL.revokeObjectURL(url);
+    } else {
+      URL.revokeObjectURL(url);
+    }
   };
-  const handleShare = () => { navigator.share ? navigator.share({ title, text: markdown.slice(0, 200) }) : handleCopy(); };
+  const handleShare = async () => {
+    if (!navigator.share) {
+      handleCopy();
+      return;
+    }
+    try {
+      await navigator.share({ title, text: markdown.slice(0, 200) });
+    } catch (err) {
+      const isAbort = err instanceof DOMException && err.name === "AbortError";
+      if (!isAbort) handleCopy();
+    }
+  };
 
-  const { spendCredits, totalCredits } = useCredits();
+  const { spendCredits, addCredits, totalCredits } = useCredits();
 
   const sendMessage = async (text?: string) => {
     const msg = (text || chatInput).trim();
     if (!msg || chatLoading) return;
-
-    // Spend 1 NeuroCredit
-    const success = await spendCredits("tutor");
-    if (!success) {
-      toast.error("NeuroCredits insufficienti (1 credito per messaggio)");
-      return;
-    }
+    let shouldRefund = false;
 
     setChatInput("");
     const userMsg: ChatMsg = { role: "user", content: msg };
@@ -255,15 +216,49 @@ const SummaryDetail = () => {
     };
 
     try {
-      await streamDocChat({
-        messages: newMessages,
-        documentContext: markdown,
-        onDelta: upsert,
-        onDone: () => setChatLoading(false),
-        onError: (e) => { toast.error(e); setChatLoading(false); },
-      });
+      if (totalCredits < CREDIT_COSTS.tutor) {
+        toast.error("NeuroCredits insufficienti (1 credito per messaggio)");
+        return;
+      }
+
+      const token = await getAuthToken().catch(() => null);
+      if (!token) {
+        toast.error("Sessione scaduta. Effettua nuovamente il login.");
+        return;
+      }
+
+      const success = await spendCredits("tutor");
+      if (!success) {
+        toast.error("NeuroCredits insufficienti (1 credito per messaggio)");
+        return;
+      }
+      shouldRefund = true;
+
+      const resp = await streamTutorChat(newMessages, token, markdown);
+      if (resp.status === 429) {
+        toast.error("Troppe richieste. Riprova tra qualche secondo.");
+        return;
+      }
+      if (resp.status === 402) {
+        toast.error("Crediti AI esauriti. Contatta il supporto.");
+        return;
+      }
+      if (!resp.ok || !resp.body) {
+        throw new Error("Stream non disponibile");
+      }
+
+      await consumeOpenAiSseStream(resp, upsert);
+      if (assistantSoFar.trim().length > 0) {
+        shouldRefund = false;
+      } else {
+        toast.error("Risposta vuota dal tutor. Credito rimborsato.");
+      }
     } catch {
       toast.error("Errore di connessione");
+    } finally {
+      if (shouldRefund) {
+        await addCredits(CREDIT_COSTS.tutor, "tutor_refund", "Rimborso automatico chat documento non riuscita");
+      }
       setChatLoading(false);
     }
   };
@@ -314,7 +309,7 @@ const SummaryDetail = () => {
                 prose-ul:my-2 prose-ol:my-2"
               style={{ fontSize: isMobile ? "14px" : "15px", lineHeight: 1.8 }}
             >
-              <ReactMarkdown>{pages[currentPage]}</ReactMarkdown>
+              <ReactMarkdown components={SAFE_MARKDOWN_COMPONENTS}>{pages[currentPage]}</ReactMarkdown>
             </motion.div>
           </AnimatePresence>
 
@@ -395,7 +390,7 @@ const SummaryDetail = () => {
                   }`}>
                     {msg.role === "assistant" ? (
                       <div className="prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0">
-                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                        <ReactMarkdown components={SAFE_MARKDOWN_COMPONENTS}>{msg.content}</ReactMarkdown>
                       </div>
                     ) : msg.content}
                   </div>

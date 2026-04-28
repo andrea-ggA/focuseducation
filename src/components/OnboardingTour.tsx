@@ -42,7 +42,7 @@ export default function OnboardingTour({ onComplete }: OnboardingTourProps) {
   const handleFinish = async () => {
     setSaving(true);
     try {
-      const updates: Record<string, any> = {
+      const updates: Record<string, boolean | string | string[] | null> = {
         onboarding_completed: true,
         study_level: studyLevel || null,
         adhd_traits: adhdLevel ? [adhdLevel] : null,
@@ -55,7 +55,11 @@ export default function OnboardingTour({ onComplete }: OnboardingTourProps) {
       }
 
       // Activate 7-day trial automatically for new users
-      await activateTrial(user.id).catch(() => {/* trial might already exist */});
+      if (user) {
+        await activateTrial(user.id).catch(() => {
+          // Trial may already exist for this account.
+        });
+      }
       confetti({ particleCount: 80, spread: 70, origin: { y: 0.6 }, colors: ["#2a9d8f", "#e9c46a", "#f4a261"] });
     } catch (e) {
       console.error("[Onboarding]", e);

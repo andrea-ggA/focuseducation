@@ -9,11 +9,15 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useExamCountdown } from "@/hooks/useExamCountdown";
 import { useToast } from "@/hooks/use-toast";
 import ReactMarkdown from "react-markdown";
+import { SAFE_MARKDOWN_COMPONENTS } from "@/lib/security";
+import type { Json } from "@/integrations/supabase/types";
 
 interface SprintStep {
   id: number; title: string; description: string;
   duration: string; type: "review"|"quiz"|"summary"|"break"; completed: boolean;
 }
+interface WeakTopicRow { topic: string | null; }
+interface DeckSummaryRow { title: string; card_count: number | null; }
 const STEP_EMOJIS: Record<string, string> = { review:"🃏", quiz:"📝", summary:"📄", break:"☕" };
 
 interface CrisisModeProps { open: boolean; onClose: () => void; }
@@ -32,28 +36,55 @@ export default function CrisisMode({ open, onClose }: CrisisModeProps) {
   // FIX: carica il piano salvato quando il modal si apre
   // Prima: il piano era perso alla chiusura del modal
   useEffect(() => {
-    if (!open || !user) return;
-    setLoadingExisting(true);
-    supabase
-      .from("crisis_sessions")
-      .select("id, plan_content, completed_steps, total_steps, exam_subject, expires_at")
-      .eq("user_id", user.id)
-      .gt("expires_at", new Date().toISOString())
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then(({ data }) => {
+    if (!open || !user) {
+      setLoadingExisting(false);
+      return;
+    }
+    let cancelled = false;
+    const loadExistingSession = async () => {
+      setLoadingExisting(true);
+      try {
+        const { data, error } = await supabase
+          .from("crisis_sessions")
+          .select("id, plan_content, completed_steps, total_steps, exam_subject, expires_at")
+          .eq("user_id", user.id)
+          .gt("expires_at", new Date().toISOString())
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (error) throw error;
+        if (cancelled) return;
+
         if (data && data.plan_content) {
           const plan = data.plan_content as unknown as { advice: string; steps: SprintStep[] };
           if (plan.steps?.length > 0) {
             setSteps(plan.steps);
             setAdvice(plan.advice || "");
             setSessionId(data.id);
+            return;
           }
         }
-        setLoadingExisting(false);
-      });
-  }, [open, user]);
+
+        setSteps([]);
+        setAdvice("");
+        setSessionId(null);
+      } catch {
+        if (!cancelled) {
+          setSteps([]);
+          setAdvice("");
+          setSessionId(null);
+          toast({ title:"Errore", description:"Impossibile recuperare il piano salvato.", variant:"destructive" });
+        }
+      } finally {
+        if (!cancelled) setLoadingExisting(false);
+      }
+    };
+    loadExistingSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, toast, user]);
 
   const completedCount = steps.filter(s => s.completed).length;
   const progressPct    = steps.length > 0 ? Math.round((completedCount/steps.length)*100) : 0;
@@ -69,15 +100,15 @@ export default function CrisisMode({ open, onClose }: CrisisModeProps) {
         supabase.from("flashcard_decks").select("title,card_count")
           .eq("user_id", user.id).order("created_at", { ascending: false }).limit(5),
       ]);
-      const errors    = errorsRes.status==="fulfilled" ? errorsRes.value.data??[] : [];
-      const decks     = decksRes.status==="fulfilled"  ? decksRes.value.data??[]  : [];
+      const errors = errorsRes.status === "fulfilled" ? (errorsRes.value.data ?? []) as WeakTopicRow[] : [];
+      const decks = decksRes.status === "fulfilled" ? (decksRes.value.data ?? []) as DeckSummaryRow[] : [];
       const topicCounts: Record<string,number> = {};
-      for (const e of errors as any[]) {
+      for (const e of errors) {
         const t = e.topic||"Generale"; topicCounts[t]=(topicCounts[t]||0)+1;
       }
       const weakTopics = Object.entries(topicCounts).sort((a,b)=>b[1]-a[1]).slice(0,5)
         .map(([t,c])=>`${t} (${c} errori)`).join(", ");
-      const deckList   = (decks as any[]).map(d=>`"${d.title}" (${d.card_count} carte)`).join(", ");
+      const deckList   = decks.map(d=>`"${d.title}" (${d.card_count ?? 0} carte)`).join(", ");
       const hoursAvailable = countdown?.daysLeft===0 ? 12 : 48;
       const subject = examInfo?.exam_subject||"l'esame";
 
@@ -109,9 +140,10 @@ Sii CONCRETO e BREVE. Usa emoji. In italiano. Max 500 parole.`,
           { id:8, title:"Simulazione esame",             description:"Rispondi a domande a tempo senza aiuti",          duration:"30 min", type:"quiz" as const,    completed:false },
         ].slice(0, hoursAvailable<=12 ? 5 : 8);
         setSteps(builtSteps);
+        const planContent = { advice: content, steps: builtSteps } as unknown as Json;
         const { data: session } = await supabase.from("crisis_sessions").insert([{
           user_id: user.id, exam_subject: subject as string, hours_available: hoursAvailable,
-          plan_content: { advice: content, steps: builtSteps } as any, total_steps: builtSteps.length,
+          plan_content: planContent, total_steps: builtSteps.length,
           expires_at: new Date(Date.now()+hoursAvailable*3_600_000).toISOString(),
         }]).select("id").single();
         if (session) setSessionId(session.id);
@@ -129,7 +161,14 @@ Sii CONCRETO e BREVE. Usa emoji. In italiano. Max 500 parole.`,
     const updated = steps.map(s => s.id===id ? {...s, completed:!s.completed} : s);
     setSteps(updated);
     const done = updated.filter(s=>s.completed).length;
-    if (sessionId) await supabase.from("crisis_sessions").update({ completed_steps:done }).eq("id",sessionId);
+    if (sessionId) {
+      const { error } = await supabase.from("crisis_sessions").update({ completed_steps:done }).eq("id",sessionId);
+      if (error) {
+        setSteps(steps);
+        toast({ title:"Errore", description:"Impossibile aggiornare il piano.", variant:"destructive" });
+        return;
+      }
+    }
     if (done===updated.length) setTimeout(()=>toast({ title:"🎯 Piano completato!", description:"In bocca al lupo! 🍀" }),300);
   };
 
@@ -218,8 +257,18 @@ Sii CONCRETO e BREVE. Usa emoji. In italiano. Max 500 parole.`,
                     {steps.map(step => (
                       <motion.div key={step.id}
                         className={`border rounded-xl overflow-hidden ${step.completed ? "border-primary/30 bg-primary/5" : "border-border bg-card"}`}>
-                        <button className="w-full flex items-center gap-3 p-3 text-left min-h-[52px]"
-                          onClick={() => setExpandedStep(expandedStep===step.id ? null : step.id)}>
+                        <div
+                          role="button"
+                          tabIndex={0}
+                          className="w-full flex items-center gap-3 p-3 text-left min-h-[52px] cursor-pointer"
+                          onClick={() => setExpandedStep(expandedStep===step.id ? null : step.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              setExpandedStep(expandedStep===step.id ? null : step.id);
+                            }
+                          }}
+                        >
                           <span className="text-lg shrink-0">{STEP_EMOJIS[step.type]}</span>
                           <div className="flex-1 min-w-0">
                             <p className={`text-sm font-medium truncate ${step.completed ? "line-through text-muted-foreground" : "text-card-foreground"}`}>
@@ -237,7 +286,7 @@ Sii CONCRETO e BREVE. Usa emoji. In italiano. Max 500 parole.`,
                           {expandedStep===step.id
                             ? <ChevronUp className="h-4 w-4 text-muted-foreground shrink-0" />
                             : <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />}
-                        </button>
+                        </div>
                         <AnimatePresence>
                           {expandedStep===step.id && (
                             <motion.div initial={{ height:0 }} animate={{ height:"auto" }} exit={{ height:0 }} className="overflow-hidden">
@@ -256,7 +305,7 @@ Sii CONCRETO e BREVE. Usa emoji. In italiano. Max 500 parole.`,
                         <span className="text-xs font-semibold text-card-foreground">Piano dettagliato AI</span>
                       </div>
                       <div className="p-3 prose prose-sm dark:prose-invert max-w-none text-xs">
-                        <ReactMarkdown>{advice}</ReactMarkdown>
+                        <ReactMarkdown components={SAFE_MARKDOWN_COMPONENTS}>{advice}</ReactMarkdown>
                       </div>
                     </div>
                   )}

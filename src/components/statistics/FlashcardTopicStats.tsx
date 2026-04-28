@@ -16,6 +16,16 @@ interface TopicStat {
   avgEF:       number;
 }
 
+interface DeckIdRow {
+  id: string;
+}
+
+interface FlashcardStatRow {
+  topic: string | null;
+  mastery_level: number;
+  easiness_factor: number | null;
+}
+
 export default function FlashcardTopicStats() {
   const { user }              = useAuth();
   const [stats, setStats]     = useState<TopicStat[]>([]);
@@ -34,7 +44,7 @@ export default function FlashcardTopicStats() {
 
       if (!decks || decks.length === 0) { setLoading(false); return; }
 
-      const deckIds = decks.map((d: any) => d.id);
+      const deckIds = (decks as DeckIdRow[]).map((deck) => deck.id);
 
       // Step 2: get flashcards in those decks
       const { data } = await supabase
@@ -46,7 +56,7 @@ export default function FlashcardTopicStats() {
       if (!data) { setLoading(false); return; }
 
       const byTopic: Record<string, { total: number; mastered: number; efSum: number }> = {};
-      for (const card of data as any[]) {
+      for (const card of data as FlashcardStatRow[]) {
         const t = card.topic || "Generale";
         if (!byTopic[t]) byTopic[t] = { total: 0, mastered: 0, efSum: 0 };
         byTopic[t].total++;

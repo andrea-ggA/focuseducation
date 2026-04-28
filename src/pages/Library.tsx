@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useSearchParams, Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, BookOpen, Layers, Map, Target, Loader2, Trash2, Sparkles, Zap, CheckSquare, FileText, ScrollText, BookMarked, Download } from "lucide-react";
+import { ArrowLeft, BookOpen, Layers, Map, Target, Loader2, Trash2, Sparkles, Zap, CheckSquare, FileText, ScrollText, BookMarked, Download, type LucideIcon } from "lucide-react";
 import ShareButton from "@/components/ShareButton";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,11 +16,14 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import AppHeader from "@/components/AppHeader";
 import MobileBottomNav from "@/components/MobileBottomNav";
+import { escapeHtml, sanitizeFilename } from "@/lib/security";
 
 interface QuizItem { id: string; title: string; topic: string | null; quiz_type: string; total_questions: number; created_at: string; share_token: string | null; }
 interface DeckItem { id: string; title: string; topic: string | null; card_count: number; created_at: string; share_token: string | null; }
-interface MapItem { id: string; title: string | null; content: any; created_at: string; }
-interface SummaryItem { id: string; title: string | null; content: any; content_type: string; created_at: string; share_token: string | null; }
+interface MindMapContent { nodes?: unknown[]; edges?: unknown[]; }
+interface SummaryContent { markdown?: string; }
+interface MapItem { id: string; title: string | null; content: MindMapContent | null; created_at: string; }
+interface SummaryItem { id: string; title: string | null; content: SummaryContent | null; content_type: string; created_at: string; share_token: string | null; }
 
 const SUMMARY_TYPE_LABELS: Record<string, { label: string; icon: typeof FileText; emoji: string }> = {
   summary: { label: "Riassunto", icon: FileText, emoji: "📄" },
@@ -28,7 +31,7 @@ const SUMMARY_TYPE_LABELS: Record<string, { label: string; icon: typeof FileText
   smart_notes: { label: "Appunti Smart", icon: BookMarked, emoji: "📝" },
 };
 
-const EmptyState = ({ icon: Icon, text, onNavigate }: { icon: any; text: string; onNavigate: () => void }) => (
+const EmptyState = ({ icon: Icon, text, onNavigate }: { icon: LucideIcon; text: string; onNavigate: () => void }) => (
   <div className="text-center py-12">
     <Icon className="h-10 w-10 text-muted-foreground/40 mx-auto mb-3" />
     <p className="text-sm text-muted-foreground">{text}</p>
@@ -37,6 +40,13 @@ const EmptyState = ({ icon: Icon, text, onNavigate }: { icon: any; text: string;
     </Button>
   </div>
 );
+
+const getItemSize = (item: { total_questions?: number; card_count?: number }) =>
+  item.total_questions ?? item.card_count ?? 0;
+
+const getSummaryMarkdown = (content: SummaryContent | null | undefined) => content?.markdown ?? "";
+
+const getMindMapNodeCount = (content: MindMapContent | null | undefined) => content?.nodes?.length ?? 0;
 
 const SelectionToolbar = ({ selected, items, onToggleAll, onDeleteSelected, label, deleting }: {
   selected: Set<string>; items: { id: string }[]; onToggleAll: () => void; onDeleteSelected: () => void; label: string; deleting: boolean;
@@ -73,8 +83,10 @@ const SelectionToolbar = ({ selected, items, onToggleAll, onDeleteSelected, labe
 };
 
 function generatePdfHtml(title: string, markdown: string): string {
+  const safeTitle = escapeHtml(title);
+  const safeMarkdown = escapeHtml(markdown);
   // Convert markdown to simple HTML for PDF
-  let html = markdown
+  const html = safeMarkdown
     .replace(/^### (.+)$/gm, '<h3 style="margin-top:18px;margin-bottom:6px;font-size:14px;font-weight:700;">$1</h3>')
     .replace(/^## (.+)$/gm, '<h2 style="margin-top:24px;margin-bottom:8px;font-size:16px;font-weight:700;border-bottom:1px solid #e5e7eb;padding-bottom:4px;">$1</h2>')
     .replace(/^# (.+)$/gm, '<h1 style="margin-top:28px;margin-bottom:10px;font-size:20px;font-weight:800;">$1</h1>')
@@ -85,14 +97,14 @@ function generatePdfHtml(title: string, markdown: string): string {
     .replace(/\n/g, '<br>');
 
   return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>${title}</title>
+<html><head><meta charset="utf-8"><title>${safeTitle}</title>
 <style>
   body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 24px; color: #1a1a2e; line-height: 1.6; font-size: 13px; }
   h1 { color: #1a1a2e; } h2 { color: #2d2d5e; } h3 { color: #4a4a7a; }
   li { list-style-type: disc; }
   @media print { body { margin: 20px; } }
 </style></head><body>
-<h1>${title}</h1>
+<h1>${safeTitle}</h1>
 <p style="margin-bottom:8px;">${html}</p>
 </body></html>`;
 }
@@ -101,7 +113,8 @@ import { LibrarySearch, type SortOption } from "@/components/library/LibrarySear
 
 const Library = () => {
   const [searchParams] = useSearchParams();
-  const initialTab = searchParams.get("tab") || "domande";
+  const rawTab = searchParams.get("tab");
+  const initialTab = rawTab && ["domande", "flashcard", "mappe", "riassunti"].includes(rawTab) ? rawTab : "domande";
   const navigate = useNavigate();
   const { user } = useAuth();
   const { toast } = useToast();
@@ -154,7 +167,7 @@ const Library = () => {
     switch (sortOrder) {
       case "oldest": return [...filtered].sort((a, b) => a.created_at.localeCompare(b.created_at));
       case "title":  return [...filtered].sort((a, b) => (a.title || "").localeCompare(b.title || ""));
-      case "size":   return [...filtered].sort((a, b) => ((b as any).total_questions || (b as any).card_count || 0) - ((a as any).total_questions || (a as any).card_count || 0));
+      case "size":   return [...filtered].sort((a, b) => getItemSize(b) - getItemSize(a));
       default:       return [...filtered].sort((a, b) => b.created_at.localeCompare(a.created_at));
     }
   };
@@ -251,38 +264,41 @@ const Library = () => {
 
 
   const handleDownloadPdf = (item: SummaryItem) => {
-    const markdown = (item.content as any)?.markdown || "";
+    const markdown = getSummaryMarkdown(item.content);
     const title = item.title || "Documento";
     const htmlContent = generatePdfHtml(title, markdown);
     const blob = new Blob([htmlContent], { type: "text/html" });
     const url = URL.createObjectURL(blob);
 
     // Open in new window for print-to-PDF
-    const printWindow = window.open(url, "_blank");
+    const printWindow = window.open(url, "_blank", "noopener,noreferrer");
     if (printWindow) {
+      printWindow.opener = null;
       printWindow.onload = () => {
         setTimeout(() => {
           printWindow.print();
+          setTimeout(() => URL.revokeObjectURL(url), 5_000);
         }, 500);
       };
+      printWindow.onafterprint = () => URL.revokeObjectURL(url);
     } else {
       // Fallback: download as HTML
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${title.replace(/[^a-zA-Z0-9]/g, "_")}.html`;
+      a.download = `${sanitizeFilename(title)}.html`;
       a.click();
+      URL.revokeObjectURL(url);
     }
-    URL.revokeObjectURL(url);
   };
 
   const handleDownloadMd = (item: SummaryItem) => {
-    const markdown = (item.content as any)?.markdown || "";
+    const markdown = getSummaryMarkdown(item.content);
     const title = item.title || "Documento";
     const blob = new Blob([markdown], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${title.replace(/[^a-zA-Z0-9]/g, "_")}.md`;
+    a.download = `${sanitizeFilename(title)}.md`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -443,7 +459,7 @@ const Library = () => {
                                 <div className="min-w-0">
                                   <p className="text-sm font-medium text-card-foreground truncate">{m.title || "Mappa senza titolo"}</p>
                                   <p className="text-xs text-muted-foreground mt-1">{new Date(m.created_at).toLocaleDateString("it-IT")}</p>
-                                  <p className="text-xs text-muted-foreground">{(m.content as any)?.nodes?.length || 0} nodi</p>
+                                  <p className="text-xs text-muted-foreground">{getMindMapNodeCount(m.content)} nodi</p>
                                 </div>
                               </div>
                               <Button
@@ -473,7 +489,7 @@ const Library = () => {
                       <div className="space-y-3">
                         {filteredSummaries.map((s, i) => {
                           const typeInfo = SUMMARY_TYPE_LABELS[s.content_type] || SUMMARY_TYPE_LABELS.summary;
-                          const markdown = (s.content as any)?.markdown || "";
+                          const markdown = getSummaryMarkdown(s.content);
                           const wordCount = markdown.split(/\s+/).filter(Boolean).length;
 
                           return (

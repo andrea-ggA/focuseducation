@@ -79,7 +79,7 @@ function calculateRadialLayout(
   positions[root.id] = { x: cx, y: cy };
 
   // Primary ring
-  const r1 = Math.min(width, height) * 0.25;
+  const r1 = Math.min(width, height) * 0.28;
   primaryNodes.forEach((node, i) => {
     const angle = (2 * Math.PI * i) / Math.max(primaryNodes.length, 1) - Math.PI / 2;
     positions[node.id] = {
@@ -89,7 +89,7 @@ function calculateRadialLayout(
   });
 
   // Detail ring — place near their parent (connected primary node)
-  const r2 = Math.min(width, height) * 0.42;
+  const r2 = Math.min(width, height) * 0.44;
   // Group details by their connected primary
   const parentMap: Record<string, string[]> = {};
   detailNodes.forEach((dn) => {
@@ -252,10 +252,6 @@ const MindMapViewer = ({ nodes, edges, onBack }: MindMapViewerProps) => {
           height={560}
           viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
           className="min-w-[600px]"
-          style={{
-            transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
-            transformOrigin: "center center",
-          }}
         >
           <defs>
             {/* Glow filter for root */}
@@ -272,160 +268,166 @@ const MindMapViewer = ({ nodes, edges, onBack }: MindMapViewerProps) => {
             </filter>
           </defs>
 
-          {/* Edges — curved */}
-          {edges.map((edge, i) => {
-            const from = positions[edge.from];
-            const to = positions[edge.to];
-            if (!from || !to) return null;
+          <g style={{ 
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transformOrigin: "center center",
+            transition: isPanning ? "none" : "transform 0.1s ease-out"
+          }}>
+            {/* Edges — curved */}
+            {edges.map((edge, i) => {
+              const from = positions[edge.from];
+              const to = positions[edge.to];
+              if (!from || !to) return null;
 
-            const isHighlighted = selectedNode && (edge.from === selectedNode || edge.to === selectedNode);
-            const isDimmed = selectedNode && !isHighlighted;
+              const isHighlighted = selectedNode && (edge.from === selectedNode || edge.to === selectedNode);
+              const isDimmed = selectedNode && !isHighlighted;
 
-            const path = curvedPath(from.x, from.y, to.x, to.y);
-            const mx = (from.x + to.x) / 2;
-            const my = (from.y + to.y) / 2;
+              const path = curvedPath(from.x, from.y, to.x, to.y);
+              const mx = (from.x + to.x) / 2;
+              const my = (from.y + to.y) / 2;
 
-            return (
-              <g key={`edge-${i}`} style={{ opacity: isDimmed ? 0.15 : 1, transition: "opacity 0.3s" }}>
-                <path
-                  d={path}
-                  fill="none"
-                  stroke={isHighlighted ? "hsl(var(--primary))" : "hsl(var(--border))"}
-                  strokeWidth={isHighlighted ? 2.5 : 1.5}
-                  strokeDasharray={isHighlighted ? undefined : "none"}
-                  opacity={0.7}
-                />
-                {edge.label && (
-                  <g>
-                    <rect
-                      x={mx - edge.label.length * 3 - 4}
-                      y={my - 9}
-                      width={edge.label.length * 6 + 8}
-                      height={16}
-                      rx={8}
-                      fill="hsl(var(--background))"
-                      opacity={0.85}
-                    />
-                    <text
-                      x={mx}
-                      y={my + 2}
-                      textAnchor="middle"
-                      fontSize="8"
-                      fill="hsl(var(--muted-foreground))"
-                      fontFamily="system-ui"
-                      fontWeight="500"
-                    >
-                      {edge.label}
-                    </text>
-                  </g>
-                )}
-              </g>
-            );
-          })}
-
-          {/* Nodes */}
-          {nodes.map((node) => {
-            const pos = positions[node.id];
-            if (!pos) return null;
-
-            const isRoot = node.id === root?.id;
-            const color = isRoot ? ROOT_COLOR : colorMap[node.group] || PALETTE[0];
-            const r = nodeRadius(node.importance);
-            const fs = fontSize(node.importance);
-            const isSelected = selectedNode === node.id;
-            const isConnected = connectedTo.has(node.id);
-            const isDimmed = selectedNode && !isSelected && !isConnected;
-
-            // Word wrap for label
-            const words = node.label.split(" ");
-            const lines: string[] = [];
-            if (words.length <= 2) {
-              lines.push(node.label);
-            } else {
-              lines.push(words.slice(0, 2).join(" "));
-              lines.push(words.slice(2).join(" "));
-            }
-
-            return (
-              <g
-                key={node.id}
-                className="cursor-pointer"
-                style={{
-                  opacity: isDimmed ? 0.2 : 1,
-                  transition: "opacity 0.3s, transform 0.2s",
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedNode(isSelected ? null : node.id);
-                }}
-              >
-                {/* Outer glow ring for root */}
-                {isRoot && (
-                  <circle
-                    cx={pos.x}
-                    cy={pos.y}
-                    r={r + 8}
+              return (
+                <g key={`edge-${i}`} style={{ opacity: isDimmed ? 0.15 : 1, transition: "opacity 0.3s" }}>
+                  <path
+                    d={path}
                     fill="none"
-                    stroke={color.light}
-                    strokeWidth={3}
-                    opacity={0.4}
-                    filter="url(#glow)"
+                    stroke={isHighlighted ? "hsl(var(--primary))" : "hsl(var(--border))"}
+                    strokeWidth={isHighlighted ? 2.5 : 1.5}
+                    strokeDasharray={isHighlighted ? undefined : "none"}
+                    opacity={0.7}
                   />
-                )}
+                  {edge.label && (
+                    <g>
+                      <rect
+                        x={mx - edge.label.length * 3 - 4}
+                        y={my - 9}
+                        width={edge.label.length * 6 + 8}
+                        height={16}
+                        rx={8}
+                        fill="hsl(var(--background))"
+                        opacity={0.85}
+                      />
+                      <text
+                        x={mx}
+                        y={my + 2}
+                        textAnchor="middle"
+                        fontSize="8"
+                        fill="hsl(var(--muted-foreground))"
+                        fontFamily="system-ui"
+                        fontWeight="500"
+                      >
+                        {edge.label}
+                      </text>
+                    </g>
+                  )}
+                </g>
+              );
+            })}
 
-                {/* Selection ring */}
-                {isSelected && (
+            {/* Nodes */}
+            {nodes.map((node) => {
+              const pos = positions[node.id];
+              if (!pos) return null;
+
+              const isRoot = node.id === root?.id;
+              const color = isRoot ? ROOT_COLOR : colorMap[node.group] || PALETTE[0];
+              const r = nodeRadius(node.importance);
+              const fs = fontSize(node.importance);
+              const isSelected = selectedNode === node.id;
+              const isConnected = connectedTo.has(node.id);
+              const isDimmed = selectedNode && !isSelected && !isConnected;
+
+              // Word wrap for label
+              const words = node.label.split(" ");
+              const lines: string[] = [];
+              if (words.length <= 2) {
+                lines.push(node.label);
+              } else {
+                lines.push(words.slice(0, 2).join(" "));
+                lines.push(words.slice(2).join(" "));
+              }
+
+              return (
+                <g
+                  key={node.id}
+                  className="cursor-pointer"
+                  style={{
+                    opacity: isDimmed ? 0.2 : 1,
+                    transition: "opacity 0.3s, transform 0.2s",
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedNode(isSelected ? null : node.id);
+                  }}
+                >
+                  {/* Outer glow ring for root */}
+                  {isRoot && (
+                    <circle
+                      cx={pos.x}
+                      cy={pos.y}
+                      r={r + 8}
+                      fill="none"
+                      stroke={color.light}
+                      strokeWidth={3}
+                      opacity={0.4}
+                      filter="url(#glow)"
+                    />
+                  )}
+
+                  {/* Selection ring */}
+                  {isSelected && (
+                    <circle
+                      cx={pos.x}
+                      cy={pos.y}
+                      r={r + 5}
+                      fill="none"
+                      stroke="hsl(var(--foreground))"
+                      strokeWidth={2.5}
+                      strokeDasharray="4 3"
+                    >
+                      <animateTransform
+                        attributeName="transform"
+                        type="rotate"
+                        from={`0 ${pos.x} ${pos.y}`}
+                        to={`360 ${pos.x} ${pos.y}`}
+                        dur="8s"
+                        repeatCount="indefinite"
+                      />
+                    </circle>
+                  )}
+
+                  {/* Node circle */}
                   <circle
                     cx={pos.x}
                     cy={pos.y}
-                    r={r + 5}
-                    fill="none"
-                    stroke="hsl(var(--foreground))"
-                    strokeWidth={2.5}
-                    strokeDasharray="4 3"
-                  >
-                    <animateTransform
-                      attributeName="transform"
-                      type="rotate"
-                      from={`0 ${pos.x} ${pos.y}`}
-                      to={`360 ${pos.x} ${pos.y}`}
-                      dur="8s"
-                      repeatCount="indefinite"
-                    />
-                  </circle>
-                )}
+                    r={r}
+                    fill={color.bg}
+                    filter="url(#nodeShadow)"
+                    stroke={isSelected ? "white" : color.light}
+                    strokeWidth={isSelected ? 3 : 1.5}
+                  />
 
-                {/* Node circle */}
-                <circle
-                  cx={pos.x}
-                  cy={pos.y}
-                  r={r}
-                  fill={color.bg}
-                  filter="url(#nodeShadow)"
-                  stroke={isSelected ? "white" : color.light}
-                  strokeWidth={isSelected ? 3 : 1.5}
-                />
-
-                {/* Label */}
-                {lines.map((line, li) => (
-                  <text
-                    key={li}
-                    x={pos.x}
-                    y={pos.y + (li - (lines.length - 1) / 2) * (fs + 2)}
-                    textAnchor="middle"
-                    dominantBaseline="central"
-                    fontSize={fs}
-                    fontWeight="700"
-                    fill="white"
-                    fontFamily="system-ui"
-                    style={{ pointerEvents: "none", textShadow: "0 1px 3px rgba(0,0,0,0.3)" }}
-                  >
-                    {line.length > 14 ? line.substring(0, 13) + "…" : line}
-                  </text>
-                ))}
-              </g>
-            );
-          })}
+                  {/* Label */}
+                  {lines.map((line, li) => (
+                    <text
+                      key={li}
+                      x={pos.x}
+                      y={pos.y + (li - (lines.length - 1) / 2) * (fs + 2)}
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      fontSize={fs}
+                      fontWeight="700"
+                      fill="white"
+                      fontFamily="system-ui"
+                      style={{ pointerEvents: "none", textShadow: "0 1px 3px rgba(0,0,0,0.3)" }}
+                    >
+                      {line.length > 14 ? line.substring(0, 13) + "…" : line}
+                    </text>
+                  ))}
+                </g>
+              );
+            })}
+          </g>
         </svg>
 
         {/* Hint */}

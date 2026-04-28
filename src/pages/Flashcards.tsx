@@ -44,7 +44,7 @@ const Flashcards = () => {
           .select("id, title, topic, card_count, created_at")
           .eq("user_id", user.id)
           .order("created_at", { ascending: false }),
-        supabase.rpc("get_due_counts_by_deck" as any, { _user_id: user.id }),
+        supabase.rpc("get_due_counts_by_deck", { _user_id: user.id }),
       ]);
 
       const dueCounts: Record<string, number> = {};

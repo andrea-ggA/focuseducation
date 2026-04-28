@@ -18,6 +18,16 @@ interface NotifPrefs {
   notification_sound_url: string | null;
 }
 
+interface NotificationPreferencesRow {
+  study_reminder_enabled: boolean;
+  reminder_time: string | null;
+  break_reminders: boolean;
+  achievement_notifications: boolean;
+  daily_summary: boolean;
+  focus_mode_enabled?: boolean;
+  notification_sound_url?: string | null;
+}
+
 const defaultPrefs: NotifPrefs = {
   study_reminder_enabled: true,
   reminder_time: "09:00",
@@ -54,14 +64,15 @@ const NotificationsSection = () => {
         .eq("user_id", user.id)
         .maybeSingle();
       if (data) {
+        const prefsRow = data as NotificationPreferencesRow;
         setPrefs({
-          study_reminder_enabled: data.study_reminder_enabled,
-          reminder_time: data.reminder_time?.substring(0, 5) || "09:00",
-          break_reminders: data.break_reminders,
-          achievement_notifications: data.achievement_notifications,
-          daily_summary: data.daily_summary,
-          focus_mode_enabled: (data as any).focus_mode_enabled ?? false,
-          notification_sound_url: (data as any).notification_sound_url ?? null,
+          study_reminder_enabled: prefsRow.study_reminder_enabled,
+          reminder_time: prefsRow.reminder_time?.substring(0, 5) || "09:00",
+          break_reminders: prefsRow.break_reminders,
+          achievement_notifications: prefsRow.achievement_notifications,
+          daily_summary: prefsRow.daily_summary,
+          focus_mode_enabled: prefsRow.focus_mode_enabled ?? false,
+          notification_sound_url: prefsRow.notification_sound_url ?? null,
         });
       }
       setLoading(false);

@@ -57,7 +57,7 @@ const StudyHeatmap = ({ focusSessions, quizAttempts }: StudyHeatmapProps) => {
     const grid: (HeatmapData | null)[][] = [];
     const monthLabels: { label: string; weekIndex: number }[] = [];
     let lastMonth = -1;
-    let currentDate = new Date(startDay);
+    const currentDate = new Date(startDay);
     let weekIndex = 0;
     let currentWeek: (HeatmapData | null)[] = [];
     let totalDays = 0;

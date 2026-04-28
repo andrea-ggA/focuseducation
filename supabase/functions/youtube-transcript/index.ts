@@ -12,6 +12,23 @@ function extractVideoId(url: string): string | null {
   return m ? m[1] : null;
 }
 
+interface CaptionTrack {
+  languageCode?: string;
+  kind?: string;
+  baseUrl: string;
+}
+
+interface CaptionJsonSegment {
+  utf8?: string;
+}
+
+interface CaptionJsonEvent {
+  segs?: CaptionJsonSegment[];
+}
+
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message : fallback;
+
 async function getTranscriptViaInnertube(videoId: string): Promise<{ transcript: string; title: string }> {
   const playerRes = await fetch("https://www.youtube.com/youtubei/v1/player", {
     method: "POST",
@@ -82,12 +99,12 @@ async function getTranscriptViaPage(videoId: string): Promise<{ transcript: stri
   return await fetchCaptionTrack(captionTracks, title);
 }
 
-async function fetchCaptionTrack(captionTracks: any[], title: string): Promise<{ transcript: string; title: string }> {
+async function fetchCaptionTrack(captionTracks: CaptionTrack[], title: string): Promise<{ transcript: string; title: string }> {
   const track =
-    captionTracks.find((t: any) => t.languageCode === "it" && !t.kind) ||
-    captionTracks.find((t: any) => t.languageCode === "en" && !t.kind) ||
-    captionTracks.find((t: any) => t.languageCode === "it") ||
-    captionTracks.find((t: any) => t.languageCode === "en") ||
+    captionTracks.find((t) => t.languageCode === "it" && !t.kind) ||
+    captionTracks.find((t) => t.languageCode === "en" && !t.kind) ||
+    captionTracks.find((t) => t.languageCode === "it") ||
+    captionTracks.find((t) => t.languageCode === "en") ||
     captionTracks[0];
 
   const captionRes = await fetch(track.baseUrl + "&fmt=srv3");
@@ -108,7 +125,7 @@ function parseCaptionXml(xml: string): string {
   const regex = /<text[^>]*>([\s\S]*?)<\/text>/g;
   let match;
   while ((match = regex.exec(xml)) !== null) {
-    let text = match[1]
+    const text = match[1]
       .replace(/&amp;/g, "&")
       .replace(/&lt;/g, "<")
       .replace(/&gt;/g, ">")
@@ -124,10 +141,10 @@ function parseCaptionXml(xml: string): string {
     try {
       const json = JSON.parse(xml);
       if (json.events) {
-        for (const event of json.events) {
+        for (const event of json.events as CaptionJsonEvent[]) {
           if (event.segs) {
             const segText = event.segs
-              .map((s: any) => s.utf8 || "")
+              .map((s) => s.utf8 || "")
               .join("")
               .trim();
             if (segText && segText !== "\n") rawSegments.push(segText);
@@ -249,8 +266,9 @@ serve(async (req) => {
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
-    } catch (captionErr: any) {
-      if (captionErr.message === "NO_CAPTIONS" || captionErr.message?.includes("sottotitoli")) {
+    } catch (captionErr: unknown) {
+      const captionMessage = getErrorMessage(captionErr, "");
+      if (captionMessage === "NO_CAPTIONS" || captionMessage.includes("sottotitoli")) {
         console.log("No captions found, attempting Gemini video analysis...");
 
         const geminiKey = Deno.env.get("GOOGLE_GEMINI_API_KEY");

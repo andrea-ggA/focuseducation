@@ -8,6 +8,7 @@ import { useCredits } from "@/hooks/useCredits";
 import { useGamification } from "@/hooks/useGamification";
 import { useToast } from "@/hooks/use-toast";
 import confetti from "canvas-confetti";
+import { getLocalDateString } from "@/lib/datetime";
 
 // PRIZES array mantenuto identico — usato SOLO per l'animazione (ordine fette)
 // Il premio reale è selezionato server-side dalla RPC fortune_wheel_spin
@@ -27,6 +28,12 @@ const SLICE_DEG = 360 / PRIZES.length;
 interface FortuneWheelProps {
   open: boolean;
   onClose: () => void;
+}
+
+interface FortuneWheelSpinResult {
+  success: boolean;
+  error?: string;
+  prize_idx?: number;
 }
 
 export default function FortuneWheel({ open, onClose }: FortuneWheelProps) {
@@ -50,12 +57,12 @@ export default function FortuneWheel({ open, onClose }: FortuneWheelProps) {
     if (!user || !open) return;
     const check = async () => {
       setLoading(true);
-      // FIX: use DB date via RPC (no client timezone tricks)
+      const today = getLocalDateString();
       const { data: spinData } = await supabase
         .from("fortune_wheel_spins")
         .select("spin_date")
         .eq("user_id", user.id)
-        .eq("spin_date", new Date().toISOString().slice(0, 10))
+        .eq("spin_date", today)
         .maybeSingle();
 
       // Check fortune_respin powerup
@@ -156,8 +163,8 @@ export default function FortuneWheel({ open, onClose }: FortuneWheelProps) {
     try {
       // FIX: selezione premio server-side via RPC atomica
       // Il server seleziona il premio, lo registra e lo eroga in un'unica transazione
-      const { data, error } = await supabase.rpc("fortune_wheel_spin" as any, { _user_id: user.id });
-      const result = data as any;
+      const { data, error } = await supabase.rpc("fortune_wheel_spin", { _user_id: user.id });
+      const result = (data ?? null) as FortuneWheelSpinResult | null;
 
       if (error || !result?.success) {
         const msg = result?.error === "already_spun"

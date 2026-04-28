@@ -8,6 +8,7 @@ import {
   Gift, Copy, Share2, Check, Users, Zap, ArrowRight,
   Twitter, MessageCircle, Mail,
 } from "lucide-react";
+import { safeOpenExternal } from "@/lib/security";
 
 interface ReferralData {
   code:             string;
@@ -17,6 +18,8 @@ interface ReferralData {
   credits_earned:   number;
   friends_joined:   number;
 }
+
+const CODE_REGEX = /^[A-Z0-9-]{6,24}$/;
 
 export default function ReferralSection() {
   const { user }              = useAuth();
@@ -44,7 +47,13 @@ export default function ReferralSection() {
   const generate = async () => {
     if (!user) return;
     setGenerating(true);
-    const code = `FOCUSED-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
+    const random = crypto.getRandomValues(new Uint32Array(1))[0].toString(36).toUpperCase().slice(0, 6);
+    const code = `FOCUSED-${random}`;
+    if (!CODE_REGEX.test(code)) {
+      setGenerating(false);
+      toast({ title: "Errore codice referral", variant: "destructive" });
+      return;
+    }
     const { error } = await supabase.from("referral_codes").insert({
       user_id: user.id, code, discount_percent: 20, max_uses: 10,
     });
@@ -69,7 +78,8 @@ export default function ReferralSection() {
       twitter:  `https://twitter.com/intent/tweet?text=${encodeURIComponent(msg)}&url=${encodeURIComponent(referralLink)}`,
       email:    `mailto:?subject=Ti invito su FocusED&body=${encodeURIComponent(msg + "\n\n" + referralLink)}`,
     };
-    window.open(urls[channel], "_blank");
+    const opened = safeOpenExternal(urls[channel]);
+    if (!opened) toast({ title: "Link di condivisione non valido", variant: "destructive" });
   };
 
   if (loading) return <div className="h-32 animate-pulse bg-secondary rounded-xl" />;

@@ -7,18 +7,28 @@ import { supabase } from "@/integrations/supabase/client";
 import { streamTutorChat, getAuthToken } from "@/lib/backendApi";
 import { useCredits, CREDIT_COSTS } from "@/hooks/useCredits";
 import { useSubscription } from "@/hooks/useSubscription";
+import { SAFE_MARKDOWN_COMPONENTS } from "@/lib/security";
 import { useToast } from "@/hooks/use-toast";
+import { consumeOpenAiSseStream } from "@/lib/sse";
 import ReactMarkdown from "react-markdown";
 import * as pdfjsLib from "pdfjs-dist";
+import pdfWorkerSrc from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import mammoth from "mammoth";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
 interface Message {
   role: "user" | "assistant";
   content: string;
 }
 
+interface PdfTextItem {
+  str?: string;
+}
+
+const SUPPORTED_DOC_EXTENSIONS = new Set([".txt", ".md", ".pdf", ".doc", ".docx"]);
+const MAX_DOC_UPLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_TEXT_UPLOAD_BYTES = 5 * 1024 * 1024;
 
 const AiTutor = () => {
   const { toast } = useToast();
@@ -44,18 +54,37 @@ const AiTutor = () => {
   const handleDocUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
-    if (f.size > 50 * 1024 * 1024) return;
+    const ext = f.name.toLowerCase().substring(f.name.lastIndexOf("."));
+    if (!SUPPORTED_DOC_EXTENSIONS.has(ext)) {
+      toast({
+        title: "Formato non supportato",
+        description: "Carica solo file .txt, .md, .pdf, .doc o .docx.",
+        variant: "destructive",
+      });
+      e.target.value = "";
+      return;
+    }
+    if (f.size > MAX_DOC_UPLOAD_BYTES || (ext === ".txt" || ext === ".md") && f.size > MAX_TEXT_UPLOAD_BYTES) {
+      toast({
+        title: "File troppo grande",
+        description: ext === ".txt" || ext === ".md"
+          ? "Per i file testuali il limite è 5MB."
+          : "Il limite è 50MB per file.",
+        variant: "destructive",
+      });
+      e.target.value = "";
+      return;
+    }
 
     setExtracting(true);
     try {
       let text = "";
-      const ext = f.name.toLowerCase().substring(f.name.lastIndexOf("."));
       if (ext === ".pdf") {
         const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise;
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const content = await page.getTextContent();
-          text += content.items.map((item: any) => item.str).join(" ") + "\n";
+          text += content.items.map((item) => (item as PdfTextItem).str ?? "").join(" ") + "\n";
         }
       } else if (ext === ".docx" || ext === ".doc") {
         const result = await mammoth.extractRawText({ arrayBuffer: await f.arrayBuffer() });
@@ -70,7 +99,12 @@ const AiTutor = () => {
       }
 
       if (text.trim().length < 50) {
-        setExtracting(false);
+        toast({
+          title: "Documento troppo corto",
+          description: "Il documento deve contenere almeno un po' di testo utile.",
+          variant: "destructive",
+        });
+        e.target.value = "";
         return;
       }
 
@@ -81,15 +115,18 @@ const AiTutor = () => {
         role: "assistant",
         content: `📄 **Documento caricato: ${f.name}**\n\nHo letto il documento (${text.length.toLocaleString()} caratteri). Ora puoi farmi domande specifiche su questo contenuto!`
       }]);
-    } catch (err: any) {
+      e.target.value = "";
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : "Impossibile leggere il file. Prova con un altro formato.";
       console.error("Doc upload error:", err);
       toast({
         title: "Errore lettura documento",
-        description: err?.message || "Impossibile leggere il file. Prova con un altro formato.",
+        description: errorMessage,
         variant: "destructive",
       });
       setDocContext(null);
       setDocName(null);
+      e.target.value = "";
     } finally {
       setExtracting(false);
     }
@@ -98,16 +135,28 @@ const AiTutor = () => {
   const removeDoc = () => {
     setDocContext(null);
     setDocName(null);
+    if (fileRef.current) fileRef.current.value = "";
   };
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
+    const userInput = input.trim();
 
     if (totalCredits < CREDIT_COSTS.tutor) {
       setMessages((prev) => [...prev,
-        { role: "user", content: input.trim() },
+        { role: "user", content: userInput },
         { role: "assistant", content: "⚡ **NeuroCredits esauriti!** Passa a un piano superiore per ottenere più crediti." }
+      ]);
+      setInput("");
+      return;
+    }
+
+    const token = await getAuthToken().catch(() => null);
+    if (!token) {
+      setMessages((prev) => [...prev,
+        { role: "user", content: userInput },
+        { role: "assistant", content: "⚠️ Devi effettuare il login per usare il Tutor AI." }
       ]);
       setInput("");
       return;
@@ -116,32 +165,25 @@ const AiTutor = () => {
     const spent = await spendCredits("tutor");
     if (!spent) {
       setMessages((prev) => [...prev,
-        { role: "user", content: input.trim() },
+        { role: "user", content: userInput },
         { role: "assistant", content: "⚡ **NeuroCredits esauriti!** Passa a un piano superiore per continuare." }
       ]);
       setInput("");
       return;
     }
 
-    const userMsg: Message = { role: "user", content: input.trim() };
+    const userMsg: Message = { role: "user", content: userInput };
     const allMessages = [...messages, userMsg];
     setMessages(allMessages);
     setInput("");
     setIsLoading(true);
 
     let assistantSoFar = "";
-    let streamStarted = false;
-
+    let shouldRefund = true;
+    const appendAssistant = (content: string) => {
+      setMessages((prev) => [...prev, { role: "assistant", content }]);
+    };
     try {
-      const token = await getAuthToken().catch(() => null);
-      if (!token) {
-        // FIX: rimborsa il credito se non riusciamo ad ottenere il token
-        await addCredits(CREDIT_COSTS.tutor, "tutor_refund", "Rimborso errore autenticazione tutor");
-        setMessages((prev) => [...prev, { role: "assistant", content: "⚠️ Devi effettuare il login per usare il Tutor AI." }]);
-        setIsLoading(false);
-        return;
-      }
-
       // FIX: docContext è inviato SOLO come parametro documentContext a streamTutorChat,
       // che lo mette nel system prompt dell'Edge Function.
       // NON aggiungerlo anche nel messages array — causerebbe doppio invio (2x token cost).
@@ -160,50 +202,26 @@ const AiTutor = () => {
         return;
       }
       if (!resp.ok || !resp.body) throw new Error("Stream failed");
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        let newlineIndex: number;
-        while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-          let line = buffer.slice(0, newlineIndex);
-          buffer = buffer.slice(newlineIndex + 1);
-          if (line.endsWith("\r")) line = line.slice(0, -1);
-          if (line.startsWith(":") || line.trim() === "") continue;
-          if (!line.startsWith("data: ")) continue;
-
-          const jsonStr = line.slice(6).trim();
-          if (jsonStr === "[DONE]") break;
-
-          try {
-            const parsed = JSON.parse(jsonStr);
-            const content = parsed.choices?.[0]?.delta?.content;
-            if (content) {
-              assistantSoFar += content;
-              setMessages((prev) => {
-                const last = prev[prev.length - 1];
-                if (last?.role === "assistant") {
-                  return prev.map((m, i) => i === prev.length - 1 ? { ...m, content: assistantSoFar } : m);
-                }
-                return [...prev, { role: "assistant", content: assistantSoFar }];
-              });
-            }
-          } catch {
-            buffer = line + "\n" + buffer;
-            break;
+      await consumeOpenAiSseStream(resp, (content) => {
+        assistantSoFar += content;
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.role === "assistant") {
+            return prev.map((m, i) => i === prev.length - 1 ? { ...m, content: assistantSoFar } : m);
           }
-        }
+          return [...prev, { role: "assistant", content: assistantSoFar }];
+        });
+      });
+      if (assistantSoFar.trim().length > 0) {
+        shouldRefund = false;
       }
     } catch (err) {
       console.error(err);
       setMessages((prev) => [...prev, { role: "assistant", content: "Mi dispiace, si è verificato un errore. Riprova." }]);
     } finally {
+      if (shouldRefund) {
+        await addCredits(CREDIT_COSTS.tutor, "tutor_refund", "Rimborso automatico messaggio tutor non riuscito");
+      }
       setIsLoading(false);
     }
   };
@@ -278,7 +296,7 @@ const AiTutor = () => {
               >
                 {msg.role === "assistant" ? (
                   <div className="prose prose-sm dark:prose-invert max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:my-1 [&_ol]:my-1 [&_li]:my-0.5 [&_p]:my-1 [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-sm [&_code]:bg-background/50 [&_code]:px-1 [&_code]:rounded">
-                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    <ReactMarkdown components={SAFE_MARKDOWN_COMPONENTS}>{msg.content}</ReactMarkdown>
                   </div>
                 ) : (
                   msg.content

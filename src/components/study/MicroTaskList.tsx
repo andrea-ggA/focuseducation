@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Clock, Sparkles, CheckCircle2, Trash2, ChevronDown, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { motion, AnimatePresence } from "framer-motion";
+import { awardUserXp } from "@/lib/progression";
 
 interface MicroTask {
   id: string;
@@ -85,14 +86,13 @@ const MicroTaskList = () => {
 
     // Award +5 XP when completing a micro-task
     if (newCompleted && user) {
-      const { data: xpData } = await supabase.from("user_xp").select("*").eq("user_id", user.id).maybeSingle();
-      if (xpData) {
-        await supabase.from("user_xp").update({
-          total_xp: xpData.total_xp + 5,
-          level: Math.floor((xpData.total_xp + 5) / 500) + 1,
-        }).eq("user_id", user.id);
-      }
-      await supabase.from("xp_log").insert({ user_id: user.id, source: "micro_task", xp_amount: 5, source_id: taskId });
+      await awardUserXp({
+        userId: user.id,
+        amount: 5,
+        source: "micro_task",
+        sourceId: taskId,
+        dedupeBySourceId: true,
+      });
       toast({ title: "+5 XP! ✨", description: "Micro-task completato!" });
     }
   };

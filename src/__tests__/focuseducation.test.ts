@@ -20,15 +20,16 @@
 import { sm2, QUALITY_OPTIONS } from "../lib/spacedRepetition";
 
 describe("SM-2 Algorithm", () => {
-  test("qualità 5 (facile) riduce easiness factor e pianifica lontano", () => {
-    const result = sm2(5, 0, 2.5, null);
+  test("qualità 5 (facile) aumenta easiness factor e pianifica almeno a 1 giorno", () => {
+    const result = sm2(5, 0, 2.5);
     expect(result.newMasteryLevel).toBeGreaterThan(0);
     expect(result.newEasinessFactor).toBeGreaterThanOrEqual(2.5);
-    expect(result.nextReviewAt.getTime()).toBeGreaterThan(Date.now() + 86_400_000);
+    const hoursFromNow = (result.nextReviewAt.getTime() - Date.now()) / 3_600_000;
+    expect(hoursFromNow).toBeGreaterThanOrEqual(23.5);
   });
 
-  test("qualità 1 (sbagliato) ripristina la carta a breve", () => {
-    const result = sm2(1, 3, 2.5, null);
+  test("qualità 0 (blackout) ripristina la carta subito", () => {
+    const result = sm2(0, 3, 2.5);
     expect(result.newMasteryLevel).toBe(0);
     const minutesFromNow = (result.nextReviewAt.getTime() - Date.now()) / 60_000;
     expect(minutesFromNow).toBeLessThan(30);
@@ -38,16 +39,16 @@ describe("SM-2 Algorithm", () => {
     let ef = 2.5;
     // Rispondo male 20 volte
     for (let i = 0; i < 20; i++) {
-      const r = sm2(1, 0, ef, null);
+      const r = sm2(1, 0, ef);
       ef = r.newEasinessFactor;
     }
     expect(ef).toBeGreaterThanOrEqual(1.3);
   });
 
-  test("QUALITY_OPTIONS ha 4 opzioni con valori 1,2,4,5", () => {
+  test("QUALITY_OPTIONS ha 4 opzioni con valori 0,2,4,5", () => {
     expect(QUALITY_OPTIONS).toHaveLength(4);
     const values = QUALITY_OPTIONS.map(o => o.value);
-    expect(values).toContain(1);
+    expect(values).toContain(0);
     expect(values).toContain(2);
     expect(values).toContain(4);
     expect(values).toContain(5);

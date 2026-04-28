@@ -12,8 +12,10 @@ import { Badge } from "@/components/ui/badge";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { playCorrectSound, playWrongSound, playCompletionSound, fireCompletionConfetti } from "@/lib/soundEffects";
+import { recordQuestionProgress } from "@/lib/progression";
 
 interface Question {
+  quiz_id: string;
   id: string; question: string; options: string[];
   correct_answer: number; explanation: string; topic: string; points: number;
 }
@@ -38,7 +40,7 @@ export default function WeakTopicsQuizPlayer({ questionIds, onBack }: WeakTopics
     if (questionIds.length === 0) return;
     supabase
       .from("quiz_questions")
-      .select("id, question, options, correct_answer, explanation, topic, points")
+      .select("id, quiz_id, question, options, correct_answer, explanation, topic, points")
       .in("id", questionIds)
       .limit(20)
       .then(({ data }) => {
@@ -67,10 +69,15 @@ export default function WeakTopicsQuizPlayer({ questionIds, onBack }: WeakTopics
     }
 
     // Record progress
-    await supabase.from("user_question_progress").insert([{
-      user_id: user.id, question_id: q.id,
-      quiz_id: q.id, is_correct: isCorrect, selected_answer: selected!,
-    }]).then(() => {});
+    await recordQuestionProgress({
+      userId: user.id,
+      quizId: q.quiz_id,
+      questionId: q.id,
+      isCorrect,
+      selectedAnswer: idx,
+    }).catch((err) => {
+      console.warn("[WeakTopicsQuizPlayer] Failed to record progress:", err);
+    });
   }, [selected, questions, current, user]);
 
   const next = useCallback(() => {

@@ -1,5 +1,5 @@
 import { useAuth } from "@/contexts/AuthContext";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useAmbientPlayer } from "@/hooks/useAmbientPlayer";
@@ -30,6 +30,7 @@ import PowerUpShop from "@/components/dashboard/PowerUpShop";
 import FortuneWheel from "@/components/dashboard/FortuneWheel";
 
 import { useSubscription } from "@/hooks/useSubscription";
+import { getLocalDateString } from "@/lib/datetime";
 import { useGamification, BADGE_DEFINITIONS } from "@/hooks/useGamification";
 import { useCredits } from "@/hooks/useCredits";
 import AppHeader from "@/components/AppHeader";
@@ -42,6 +43,7 @@ import FocusModeToggle from "@/components/dashboard/FocusModeToggle";
 import WeakTopicsQuizPlayer from "@/components/dashboard/WeakTopicsQuizPlayer";
 import { Link } from "react-router-dom";
 import { Progress } from "@/components/ui/progress";
+import type { Json } from "@/integrations/supabase/types";
 
 interface Task {
   id: string;
@@ -57,6 +59,10 @@ interface Profile {
   onboarding_completed: boolean;
 }
 
+interface EnergyLevelRow {
+  energy_level?: EnergyLevel | null;
+}
+
 const Dashboard = () => {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -69,7 +75,7 @@ const Dashboard = () => {
   const [tasksCompletedToday, setTasksCompletedToday] = useState(0);
   const [tasksTotalToday, setTasksTotalToday]         = useState(0);
   // Piano settimanale e dueCount caricati nel batch principale → appaiono subito
-  const [studyPlanData, setStudyPlanData]   = useState<any | null>(null);
+  const [studyPlanData, setStudyPlanData]   = useState<Json | null>(null);
   const [studyPlanLoaded, setStudyPlanLoaded] = useState(false);
   const [dashboardDueCount, setDashboardDueCount] = useState<number | null>(null);
   const [totalFocusAllTime, setTotalFocusAllTime] = useState(0);
@@ -121,10 +127,6 @@ const Dashboard = () => {
   const { totalCredits } = useCredits();
 
   useEffect(() => {
-    if (user) fetchData();
-  }, [user]);
-
-  useEffect(() => {
     if (profile && !profile.onboarding_completed) setShowOnboarding(true);
   }, [profile]);
 
@@ -158,46 +160,52 @@ const Dashboard = () => {
         }
       });
     }
-  }, [xp, totalFocusMinutes, totalCompletedTasks]);
+  }, [xp, achievements, totalFocusMinutes, totalCompletedTasks, totalFocusAllTime, checkBadges, toast]);
 
-  // Aggiorna solo le metriche che cambiano durante la sessione (focus min, quiz, task oggi)
+  // Aggiorna metriche che cambiano durante la sessione (focus min, quiz, task oggi) + all-time
   // Chiamato da Pomodoro onSessionComplete, FocusBurst onComplete, QuickReview onComplete
   const refreshScoreMetrics = async () => {
     if (!user) return;
-    const today = new Date().toISOString().split("T")[0];
-    const [focusTodayRes, quizzesTodayRes, tasksTotalRes, tasksCompletedRes] = await Promise.all([
+    const today = getLocalDateString();
+    const [focusTodayRes, focusAllRes, quizzesTodayRes, tasksTotalRes, tasksCompletedRes, completedTasksAllRes] = await Promise.all([
       supabase.from("focus_sessions").select("duration_minutes").eq("user_id", user.id).eq("completed", true).gte("started_at", `${today}T00:00:00`),
+      supabase.from("focus_sessions").select("duration_minutes").eq("user_id", user.id).eq("completed", true),
       supabase.from("quiz_attempts").select("id", { count: "exact", head: true }).eq("user_id", user.id).gte("completed_at", `${today}T00:00:00`),
       supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user.id).gte("created_at", `${today}T00:00:00`),
       supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("completed", true).gte("updated_at", `${today}T00:00:00`),
+      supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("completed", true),
     ]);
+    
     if (focusTodayRes.data)        setTotalFocusMinutes(focusTodayRes.data.reduce((s, r) => s + (r.duration_minutes || 0), 0));
+    if (focusAllRes.data)          setTotalFocusAllTime(focusAllRes.data.reduce((s, r) => s + (r.duration_minutes || 0), 0));
     if (quizzesTodayRes.count != null) setQuizzesToday(quizzesTodayRes.count);
     if (tasksTotalRes.count != null)    setTasksTotalToday(tasksTotalRes.count);
     if (tasksCompletedRes.count != null) setTasksCompletedToday(tasksCompletedRes.count);
-    // studyPlanRes and dueCountRes are loaded in fetchData, not here
+    if (completedTasksAllRes.count != null) setTotalCompletedTasks(completedTasksAllRes.count);
+    
     setStudyPlanLoaded(true);
   };
 
-  const fetchData = async () => {
-    const today = new Date().toISOString().split("T")[0];
+  const fetchData = useCallback(async () => {
+    if (!user) return;
+    const today = getLocalDateString();
     const [tasksRes, profileRes, focusTodayRes, focusAllRes, completedTasksRes, energyRes, quizzesTodayRes, tasksTotalRes, tasksCompletedRes, studyPlanRes, dueCountRes] = await Promise.all([
-      supabase.from("tasks").select("id, title, completed, estimated_minutes, priority").eq("user_id", user!.id).order("created_at", { ascending: false }).limit(20),
-      supabase.from("profiles").select("full_name, streak_count, onboarding_completed").eq("user_id", user!.id).maybeSingle(),
-      supabase.from("focus_sessions").select("duration_minutes").eq("user_id", user!.id).eq("completed", true).gte("started_at", `${today}T00:00:00`),
-      supabase.from("focus_sessions").select("duration_minutes").eq("user_id", user!.id).eq("completed", true),
-      supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user!.id).eq("completed", true),
-      supabase.from("profiles").select("energy_level" as any).eq("user_id", user!.id).maybeSingle(),
-      supabase.from("quiz_attempts").select("id", { count: "exact", head: true }).eq("user_id", user!.id).gte("completed_at", `${today}T00:00:00`),
-      supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user!.id).gte("created_at", `${today}T00:00:00`),
-      supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user!.id).eq("completed", true).gte("updated_at", `${today}T00:00:00`),
+      supabase.from("tasks").select("id, title, completed, estimated_minutes, priority").eq("user_id", user.id).order("created_at", { ascending: false }).limit(20),
+      supabase.from("profiles").select("full_name, streak_count, onboarding_completed").eq("user_id", user.id).maybeSingle(),
+      supabase.from("focus_sessions").select("duration_minutes").eq("user_id", user.id).eq("completed", true).gte("started_at", `${today}T00:00:00`),
+      supabase.from("focus_sessions").select("duration_minutes").eq("user_id", user.id).eq("completed", true),
+      supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("completed", true),
+      supabase.from("profiles").select("energy_level").eq("user_id", user.id).maybeSingle(),
+      supabase.from("quiz_attempts").select("id", { count: "exact", head: true }).eq("user_id", user.id).gte("completed_at", `${today}T00:00:00`),
+      supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user.id).gte("created_at", `${today}T00:00:00`),
+      supabase.from("tasks").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("completed", true).gte("updated_at", `${today}T00:00:00`),
       // Piano settimanale — caricato qui per evitare flash vuoto in StudyPlanAI
-      supabase.from("study_plans").select("plan_data").eq("user_id", user!.id)
+      supabase.from("study_plans").select("plan_data").eq("user_id", user.id)
         .eq("week_start", (() => {
           const m = new Date(today); m.setDate(m.getDate() - ((m.getDay()+6)%7)); return m.toISOString().split("T")[0];
         })()).maybeSingle(),
       // Due card count — caricato qui per evitare flash vuoto in DueCardsWidget
-      supabase.rpc("count_due_cards", { _user_id: user!.id }),
+      supabase.rpc("count_due_cards", { _user_id: user.id }),
     ]);
     if (tasksRes.data) setTasks(tasksRes.data);
     // Graceful fallback: if profile doesn't exist yet (new user), use defaults
@@ -211,9 +219,14 @@ const Dashboard = () => {
     if (studyPlanRes.data?.plan_data) setStudyPlanData(studyPlanRes.data.plan_data);
     setStudyPlanLoaded(true);
     if (typeof dueCountRes.data === "number") setDashboardDueCount(dueCountRes.data);
-    if (energyRes.data && (energyRes.data as any).energy_level) setEnergyLevel((energyRes.data as any).energy_level as EnergyLevel);
+    const energyData = energyRes.data as EnergyLevelRow | null;
+    if (energyData?.energy_level) setEnergyLevel(energyData.energy_level);
     setLoading(false);
-  };
+  }, [user]);
+
+  useEffect(() => {
+    if (user) fetchData();
+  }, [user, fetchData]);
 
   const addTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -436,7 +449,7 @@ const Dashboard = () => {
               <div className="flex items-center gap-2">
                 <select
                   value={ambientSound}
-                  onChange={(e) => changeAmbientSound(e.target.value as any)}
+                  onChange={(e) => changeAmbientSound(e.target.value)}
                   className="text-xs bg-background border border-border rounded-md px-2 py-1.5 text-foreground"
                 >
                   {AMBIENT_SOUNDS.map((s) => (

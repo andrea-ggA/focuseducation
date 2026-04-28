@@ -15,11 +15,20 @@ const LIGATURES: [RegExp, string][] = [
 export function cleanText(raw: string): string {
   let t = raw;
   for (const [re, rep] of LIGATURES) t = t.replace(re, rep);
+  t = Array.from(t).map((char) => {
+    const code = char.charCodeAt(0);
+    const isControlChar =
+      (code >= 0x00 && code <= 0x08) ||
+      code === 0x0b ||
+      code === 0x0c ||
+      (code >= 0x0e && code <= 0x1f) ||
+      code === 0x7f;
+    return isControlChar ? " " : char;
+  }).join("");
   return t
     .replace(/-\n(\S)/g, "$1")            // parola spezzata a fine riga
     .replace(/\n\s*(?:Page|Pagina|Pag\.?|p\.)\s*\d+\s*\n/gi, "\n")
     .replace(/\n\s*\d{1,4}\s*\n/g, "\n") // numero di pagina isolato
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ")
     .replace(/\uFFFD/g, " ")
     .replace(/[\u200B-\u200F]/g, "")
     .replace(/\u00AD/g, "")

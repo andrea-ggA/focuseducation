@@ -17,6 +17,7 @@ import CreditPaywall, { type PaywallAction } from "@/components/dashboard/Credit
 import AppHeader from "@/components/AppHeader";
 import MobileBottomNav from "@/components/MobileBottomNav";
 import { useStudyMachine } from "@/hooks/useStudyMachine";
+import { isSafeUuid } from "@/lib/security";
 
 const Study = () => {
   const { user }                  = useAuth();
@@ -36,17 +37,36 @@ const Study = () => {
   useEffect(() => {
     const quizParam    = searchParams.get("quiz");
     const gamifiedParam = searchParams.get("gamified");
+    if (quizParam && !isSafeUuid(quizParam)) {
+      const newParams = new URLSearchParams(searchParams);
+      newParams.delete("quiz");
+      newParams.delete("gamified");
+      setSearchParams(newParams, { replace: true });
+      return;
+    }
     if (quizParam && state.view === "home") {
       dispatch({ type: "UPLOAD_QUIZ", quizId: quizParam, gamified: gamifiedParam === "true" });
-      const newParams = new URLSearchParams();
-      if (source) newParams.set("source", source);
+      const newParams = new URLSearchParams(searchParams);
+      newParams.delete("quiz");
+      newParams.delete("gamified");
       setSearchParams(newParams, { replace: true });
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [searchParams, state.view, dispatch, setSearchParams]);
 
   const handleBack = () => {
-    if (source === "libreria") { navigate("/libreria"); return; }
-    dispatch({ type: "BACK" });
+    if (state.view === "home" && source === "libreria") { 
+      navigate("/libreria"); 
+      return; 
+    }
+    
+    // Se siamo in un quiz/flashcard e veniamo dalla libreria,
+    // torniamo prima alla selezione argomenti invece di uscire subito
+    if (state.view === "quiz" || state.view === "flashcards") {
+      dispatch({ type: "BACK_TO_TOPICS" });
+    } else {
+      dispatch({ type: "BACK" });
+    }
+    
     setRefreshKey((p) => p + 1);
   };
 

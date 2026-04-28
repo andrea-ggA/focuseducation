@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { invokeEdgeFunction } from "@/lib/backendApi";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -43,6 +44,12 @@ interface StudyPlan {
   weekly_goal: string;
   total_estimated_minutes: number;
   days: DayPlan[];
+}
+
+interface GenerateStudyPlanResponse {
+  success?: boolean;
+  plan?: StudyPlan;
+  error?: string;
 }
 
 interface EnergyProfileRow {
@@ -147,14 +154,11 @@ const StudyPlanAI = ({ initialPlan, preloaded = false, onPlanGenerated }: StudyP
         .eq("user_id", user.id)
         .single();
 
-      const { data, error } = await supabase.functions.invoke("generate-study-plan", {
-        body: {
-          energy_level: (profile as EnergyProfileRow | null)?.energy_level || "balanced",
-          language: navigator.language?.split("-")[0] || "it",
-        },
+      const data = await invokeEdgeFunction<GenerateStudyPlanResponse>("generate-study-plan", {
+        energy_level: (profile as EnergyProfileRow | null)?.energy_level || "balanced",
+        language: navigator.language?.split("-")[0] || "it",
       });
 
-      if (error) throw error;
       if (data?.error) throw new Error(data.error);
 
       if (data?.plan) {

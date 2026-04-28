@@ -15,6 +15,7 @@ import AppHeader from "@/components/AppHeader";
 import MindMapViewer from "@/components/study/MindMapViewer";
 import CreditPaywall from "@/components/dashboard/CreditPaywall";
 import { extractTextFromFile } from "@/lib/textExtraction";
+import { generateMindmap } from "@/lib/backendApi";
 
 interface SavedMap {
   id: string;
@@ -105,13 +106,7 @@ const MindMaps = () => {
       const spent = await spendCredits("mindmap");
       if (!spent) { setShowPaywall(true); return; }
 
-      // FIX: usa supabase.functions.invoke invece di generateFromText (usava VITE_BACKEND_URL)
-      const { data: fnData, error: fnError } = await supabase.functions.invoke("generate-mindmap", {
-        body: { content: inputText.trim(), text: inputText.trim() },
-      });
-      if (fnError || !fnData?.success) throw new Error(fnError?.message || "Generazione mappa fallita");
-      const nodes = fnData.nodes || [];
-      const edges = fnData.edges || [];
+      const { nodes, edges } = await generateMindmap(inputText.trim());
       const title = selectedFile?.name || inputText.trim().substring(0, 60);
 
       const { data: saved } = await supabase

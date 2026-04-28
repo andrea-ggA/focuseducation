@@ -53,12 +53,15 @@ const ASYNC_MODE_THRESHOLD = 100_000;
 // Con 6k: 42k doc→8 chunk×25=200 domande | 80k→16×25=400 | 10k→2×25=50.
 // Timing: 16 chunk × ~5s (gemini-2.5-flash, concurrency 4) = ~20s. Sicuro.
 const CHUNK_MAX_CHARS = 6_000;
+const LARGE_DOC_CHUNK_MAX_CHARS = 12_000;
 const CHUNK_OVERLAP = 400; // ridotto proporzionalmente (era 800 per chunk da 28k)
-const MAX_CHUNKS = 8;
 const CONCURRENCY = 4;
-const MAX_ITEMS_PER_CHUNK = 14;
-const TARGET_QUIZ_ITEMS = 80;
-const TARGET_FLASHCARD_ITEMS = 96;
+const MIN_ITEMS_PER_CHUNK = 1;
+const MAX_ITEMS_PER_CHUNK = 8;
+const MIN_QUIZ_ITEMS = 40;
+const MAX_QUIZ_ITEMS = 180;
+const MIN_FLASHCARD_ITEMS = 48;
+const MAX_FLASHCARD_ITEMS = 220;
 
 interface ErrorWithStatus {
   status?: number;
@@ -219,25 +222,36 @@ function chunkBySentences(text: string, maxChars = CHUNK_MAX_CHARS, overlap = CH
 // ═══════════════════════════════════════════════════════════════════════════════
 // § 5 PARALLEL
 // ═══════════════════════════════════════════════════════════════════════════════
-function selectRepresentativeChunks(chunks: string[], maxChunks: number): string[] {
-  if (chunks.length <= maxChunks) return chunks;
-  if (maxChunks <= 1) return [chunks[0]];
-
-  const selected: string[] = [];
-  const used = new Set<number>();
-  for (let i = 0; i < maxChunks; i++) {
-    const idx = Math.round((i * (chunks.length - 1)) / (maxChunks - 1));
-    if (!used.has(idx)) {
-      selected.push(chunks[idx]);
-      used.add(idx);
-    }
-  }
-  return selected;
+function chunkSizeForDocument(textLength: number): number {
+  return textLength >= 180_000 ? LARGE_DOC_CHUNK_MAX_CHARS : CHUNK_MAX_CHARS;
 }
 
-function itemsPerChunk(type: string, chunkCount: number): number {
-  const target = type === "flashcards" ? TARGET_FLASHCARD_ITEMS : TARGET_QUIZ_ITEMS;
-  return Math.max(8, Math.min(MAX_ITEMS_PER_CHUNK, Math.ceil(target / Math.max(1, chunkCount))));
+function sampleDocumentSlices(text: string, slices = 6, sliceChars = 4_000): string {
+  if (text.length <= slices * sliceChars) return text;
+
+  const parts: string[] = [];
+  for (let i = 0; i < slices; i++) {
+    const start = Math.floor((i * Math.max(0, text.length - sliceChars)) / Math.max(1, slices - 1));
+    const segment = text.substring(start, start + sliceChars).trim();
+    if (segment.length > 0) {
+      parts.push(`[[SLICE ${i + 1}/${slices}]]\n${segment}`);
+    }
+  }
+  return parts.join("\n\n");
+}
+
+function targetItemCount(type: string, textLength: number): number {
+  if (type === "flashcards") {
+    return Math.max(MIN_FLASHCARD_ITEMS, Math.min(MAX_FLASHCARD_ITEMS, Math.round(textLength / 1_600)));
+  }
+  return Math.max(MIN_QUIZ_ITEMS, Math.min(MAX_QUIZ_ITEMS, Math.round(textLength / 2_200)));
+}
+
+function itemsPerChunk(totalTargetItems: number, chunkCount: number): number {
+  return Math.max(
+    MIN_ITEMS_PER_CHUNK,
+    Math.min(MAX_ITEMS_PER_CHUNK, Math.ceil(totalTargetItems / Math.max(1, chunkCount))),
+  );
 }
 
 async function parallelLimit<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
@@ -545,7 +559,7 @@ function detectLanguageHeuristic(sample: string): string {
 // normCmp / topicOverlap: funzioni helper per confronto stringhe topic.
 // ═══════════════════════════════════════════════════════════════════════════════
 async function extractTopicOutline(apiKey: string, text: string, language: string): Promise<string[]> {
-  const sample = text.substring(0, 20_000);
+  const sample = sampleDocumentSlices(text, 6, 4_000);
   const langNote = language === "italiano" ? "Rispondi SOLO in italiano." : `Respond in ${language}.`;
   try {
     const data = await callAI(
@@ -554,7 +568,7 @@ async function extractTopicOutline(apiKey: string, text: string, language: strin
         { role: "system", content: `You are an expert academic content analyst. ${langNote}` },
         {
           role: "user",
-          content: `Analyze this academic text and identify the 5 to 15 MAIN topics/chapters.\n\nRULES:\n- Each topic: BROAD chapter-level concept (2-5 words max).\n- MUTUALLY EXCLUSIVE (no overlaps). CLEAR academic terminology.\n- Order by appearance. IGNORE: page numbers, headers, bibliography, URLs.\n\nReturn ONLY a JSON array. Example: ["Cell Biology", "DNA Replication"]\n\n--- TEXT ---\n${sample}\n--- END ---\nJSON array only.`,
+          content: `Analyze these distributed slices from one academic document and identify the 6 to 18 MAIN topics/chapters that cover the WHOLE document.\n\nRULES:\n- The slices come from different parts of the same document, not only the beginning.\n- Each topic: broad chapter-level concept (2-5 words max).\n- MUTUALLY EXCLUSIVE (no overlaps). CLEAR academic terminology.\n- Order topics as they would likely appear through the document.\n- IGNORE: page numbers, headers, bibliography, URLs.\n\nReturn ONLY a JSON array. Example: ["Cell Biology", "DNA Replication"]\n\n--- DISTRIBUTED SLICES ---\n${sample}\n--- END ---\nJSON array only.`,
         },
       ],
       FAST_MODEL,
@@ -943,16 +957,18 @@ serve(async (req) => {
         : "";
 
     // Step 1: chunking + pipeline AI parallela
-    const allChunks = chunkBySentences(cleanedContent, CHUNK_MAX_CHARS, CHUNK_OVERLAP);
-    const chunks = selectRepresentativeChunks(allChunks, MAX_CHUNKS);
+    const effectiveChunkSize = chunkSizeForDocument(cleanedLen);
+    const allChunks = chunkBySentences(cleanedContent, effectiveChunkSize, CHUNK_OVERLAP);
+    const chunks = allChunks;
     const nChunks = chunks.length;
-    const requestedItemsPerChunk = itemsPerChunk(type, nChunks);
+    const totalTargetItems = targetItemCount(type, cleanedLen);
+    const requestedItemsPerChunk = itemsPerChunk(totalTargetItems, nChunks);
     const startTime = Date.now();
     const allQuestions: QuizQuestionGen[] = [];
     const allCards: FlashcardGen[] = [];
     let generatedTitle = title || "Studio";
     let completedCount = 0;
-    console.log(`Chunks: ${allChunks.length} total → sampled ${nChunks} at concurrency ${CONCURRENCY}, ${requestedItemsPerChunk}/chunk`);
+    console.log(`Chunks: ${nChunks} full-coverage units at size ${effectiveChunkSize}, target ${totalTargetItems} items, ${requestedItemsPerChunk}/chunk`);
 
     const chunkTasks = chunks.map((chunk, idx) => async () => {
       const isFirst = idx === 0,
@@ -960,8 +976,8 @@ serve(async (req) => {
         isQ = type !== "flashcards";
       const systemMsg = `You are a professional academic ${isQ ? "examiner" : "educator"}. Extract the most important concepts. Generate EXACTLY ${requestedItemsPerChunk} ${isQ ? "questions" : "flashcards"}. Respond ONLY with valid JSON. ${langInstruction}`;
       const prompt = isQ
-        ? `Generate EXACTLY ${requestedItemsPerChunk} multiple-choice questions from representative fragment ${chunkNum}/${nChunks}.\n\nCRITICAL RULES:\n1. Questions based ONLY on THIS fragment.\n2. Prioritize high-value exam concepts, not minor details.\n3. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n4. 4 plausible options. correct_answer 0-3, ≈25% each.\n5. explanation: WHY correct (max 120 chars).\n6. topic: max 4 words.${topicInstruction}\n7. Mix: easy 25% (10pts/15s), medium 40% (20pts/30s), hard 35% (30pts/45s).${type === "quiz_gamified" ? "\n8. ADHD: short, punchy, direct." : ""}\n\n${isFirst ? `Output: {"title":"descriptive title","questions":[...]}` : `Output: {"questions":[...]}`}\nEach: {"question":"...","options":["A","B","C","D"],"correct_answer":0,"explanation":"...","topic":"...","points":10,"time_limit_seconds":30}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${requestedItemsPerChunk} questions. ONLY valid JSON.`
-        : `Generate EXACTLY ${requestedItemsPerChunk} flashcards from representative fragment ${chunkNum}/${nChunks}.\n\nCRITICAL RULES:\n1. Flashcards based ONLY on THIS fragment.\n2. Prioritize high-value study concepts, not minor details.\n3. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n4. front max 110 chars. back max 190 chars.\n5. topic max 4 words.${topicInstruction}\n6. difficulty: easy 25%, medium 40%, hard 35%.\n\n${isFirst ? `Output: {"title":"descriptive title","cards":[...]}` : `Output: {"cards":[...]}`}\nEach: {"front":"...","back":"...","topic":"...","difficulty":"medium"}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${requestedItemsPerChunk} flashcards. ONLY valid JSON.`;
+        ? `Generate EXACTLY ${requestedItemsPerChunk} multiple-choice questions from fragment ${chunkNum}/${nChunks}.\n\nCRITICAL RULES:\n1. Questions based ONLY on THIS fragment.\n2. Prioritize high-value exam concepts, not minor details.\n3. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n4. 4 plausible options. correct_answer 0-3, ≈25% each.\n5. explanation: WHY correct (max 120 chars).\n6. topic: max 4 words.${topicInstruction}\n7. Mix: easy 25% (10pts/15s), medium 40% (20pts/30s), hard 35% (30pts/45s).${type === "quiz_gamified" ? "\n8. ADHD: short, punchy, direct." : ""}\n\n${isFirst ? `Output: {"title":"descriptive title","questions":[...]}` : `Output: {"questions":[...]}`}\nEach: {"question":"...","options":["A","B","C","D"],"correct_answer":0,"explanation":"...","topic":"...","points":10,"time_limit_seconds":30}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${requestedItemsPerChunk} questions. ONLY valid JSON.`
+        : `Generate EXACTLY ${requestedItemsPerChunk} flashcards from fragment ${chunkNum}/${nChunks}.\n\nCRITICAL RULES:\n1. Flashcards based ONLY on THIS fragment.\n2. Prioritize high-value study concepts, not minor details.\n3. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n4. front max 110 chars. back max 190 chars.\n5. topic max 4 words.${topicInstruction}\n6. difficulty: easy 25%, medium 40%, hard 35%.\n\n${isFirst ? `Output: {"title":"descriptive title","cards":[...]}` : `Output: {"cards":[...]}`}\nEach: {"front":"...","back":"...","topic":"...","difficulty":"medium"}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${requestedItemsPerChunk} flashcards. ONLY valid JSON.`;
       try {
         const aiData = await callAI(
           GEMINI_API_KEY,

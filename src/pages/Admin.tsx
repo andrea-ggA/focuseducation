@@ -166,12 +166,19 @@ const Admin = () => {
 
   const updateSubscriptionPlan = async (subId: string, newPlan: string) => {
     const sub = subscriptions.find(s => s.id === subId);
-    const { error } = await supabase.from("subscriptions").update({ plan_name: newPlan }).eq("id", subId);
+    const isPaidPlan = newPlan !== "Free";
+    const updates = {
+      plan_name: newPlan,
+      status: isPaidPlan ? "active" : "cancelled",
+      current_period_start: isPaidPlan ? new Date().toISOString() : null,
+      current_period_end: isPaidPlan ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() : null,
+    };
+    const { error } = await supabase.from("subscriptions").update(updates).eq("id", subId);
     if (error) {
       toast({ title: "Errore", description: error.message, variant: "destructive" });
       return;
     }
-    setSubscriptions((prev) => prev.map((s) => s.id === subId ? { ...s, plan_name: newPlan } : s));
+    setSubscriptions((prev) => prev.map((s) => s.id === subId ? { ...s, ...updates } : s));
 
     // Auto-assign NeuroCredits based on plan
     if (sub) {

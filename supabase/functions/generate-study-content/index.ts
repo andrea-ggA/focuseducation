@@ -54,9 +54,11 @@ const ASYNC_MODE_THRESHOLD = 100_000;
 // Timing: 16 chunk × ~5s (gemini-2.5-flash, concurrency 4) = ~20s. Sicuro.
 const CHUNK_MAX_CHARS = 6_000;
 const CHUNK_OVERLAP = 400; // ridotto proporzionalmente (era 800 per chunk da 28k)
-const MAX_CHUNKS = 16; // alzato 8→16 per coprire doc grandi
+const MAX_CHUNKS = 8;
 const CONCURRENCY = 4;
-const ITEMS_PER_CHUNK = 25; // alzato 15→25 per più domande per chunk
+const MAX_ITEMS_PER_CHUNK = 14;
+const TARGET_QUIZ_ITEMS = 80;
+const TARGET_FLASHCARD_ITEMS = 96;
 
 interface ErrorWithStatus {
   status?: number;
@@ -217,6 +219,27 @@ function chunkBySentences(text: string, maxChars = CHUNK_MAX_CHARS, overlap = CH
 // ═══════════════════════════════════════════════════════════════════════════════
 // § 5 PARALLEL
 // ═══════════════════════════════════════════════════════════════════════════════
+function selectRepresentativeChunks(chunks: string[], maxChunks: number): string[] {
+  if (chunks.length <= maxChunks) return chunks;
+  if (maxChunks <= 1) return [chunks[0]];
+
+  const selected: string[] = [];
+  const used = new Set<number>();
+  for (let i = 0; i < maxChunks; i++) {
+    const idx = Math.round((i * (chunks.length - 1)) / (maxChunks - 1));
+    if (!used.has(idx)) {
+      selected.push(chunks[idx]);
+      used.add(idx);
+    }
+  }
+  return selected;
+}
+
+function itemsPerChunk(type: string, chunkCount: number): number {
+  const target = type === "flashcards" ? TARGET_FLASHCARD_ITEMS : TARGET_QUIZ_ITEMS;
+  return Math.max(8, Math.min(MAX_ITEMS_PER_CHUNK, Math.ceil(target / Math.max(1, chunkCount))));
+}
+
 async function parallelLimit<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
   const results: T[] = new Array(tasks.length);
   let nextIndex = 0;
@@ -921,23 +944,24 @@ serve(async (req) => {
 
     // Step 1: chunking + pipeline AI parallela
     const allChunks = chunkBySentences(cleanedContent, CHUNK_MAX_CHARS, CHUNK_OVERLAP);
-    const nChunks = Math.min(allChunks.length, MAX_CHUNKS);
-    const chunks = allChunks.slice(0, nChunks);
+    const chunks = selectRepresentativeChunks(allChunks, MAX_CHUNKS);
+    const nChunks = chunks.length;
+    const requestedItemsPerChunk = itemsPerChunk(type, nChunks);
     const startTime = Date.now();
     const allQuestions: QuizQuestionGen[] = [];
     const allCards: FlashcardGen[] = [];
     let generatedTitle = title || "Studio";
     let completedCount = 0;
-    console.log(`Chunks: ${allChunks.length} total → processing ${nChunks} at concurrency ${CONCURRENCY}`);
+    console.log(`Chunks: ${allChunks.length} total → sampled ${nChunks} at concurrency ${CONCURRENCY}, ${requestedItemsPerChunk}/chunk`);
 
     const chunkTasks = chunks.map((chunk, idx) => async () => {
       const isFirst = idx === 0,
         chunkNum = idx + 1,
         isQ = type !== "flashcards";
-      const systemMsg = `You are a professional academic ${isQ ? "examiner" : "educator"}. Extract EVERY important concept. Generate EXACTLY ${ITEMS_PER_CHUNK} ${isQ ? "questions" : "flashcards"}. Respond ONLY with valid JSON. ${langInstruction}`;
+      const systemMsg = `You are a professional academic ${isQ ? "examiner" : "educator"}. Extract the most important concepts. Generate EXACTLY ${requestedItemsPerChunk} ${isQ ? "questions" : "flashcards"}. Respond ONLY with valid JSON. ${langInstruction}`;
       const prompt = isQ
-        ? `Generate EXACTLY ${ITEMS_PER_CHUNK} multiple-choice questions from fragment ${chunkNum}/${nChunks}.\n\nCRITICAL RULES:\n1. Questions based ONLY on THIS fragment.\n2. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n3. 4 plausible options. correct_answer 0-3, ≈25% each.\n4. explanation: WHY correct (max 120 chars).\n5. topic: max 4 words.${topicInstruction}\n6. Mix: easy 25% (10pts/15s), medium 40% (20pts/30s), hard 35% (30pts/45s).${type === "quiz_gamified" ? "\n7. ADHD: short, punchy, direct." : ""}\n\n${isFirst ? `Output: {"title":"descriptive title","questions":[...]}` : `Output: {"questions":[...]}`}\nEach: {"question":"...","options":["A","B","C","D"],"correct_answer":0,"explanation":"...","topic":"...","points":10,"time_limit_seconds":30}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${ITEMS_PER_CHUNK} questions. ONLY valid JSON.`
-        : `Generate EXACTLY ${ITEMS_PER_CHUNK} flashcards from fragment ${chunkNum}/${nChunks}.\n\nCRITICAL RULES:\n1. Flashcards based ONLY on THIS fragment.\n2. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n3. front max 110 chars. back max 190 chars.\n4. topic max 4 words.${topicInstruction}\n5. difficulty: easy 25%, medium 40%, hard 35%.\n\n${isFirst ? `Output: {"title":"descriptive title","cards":[...]}` : `Output: {"cards":[...]}`}\nEach: {"front":"...","back":"...","topic":"...","difficulty":"medium"}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${ITEMS_PER_CHUNK} flashcards. ONLY valid JSON.`;
+        ? `Generate EXACTLY ${requestedItemsPerChunk} multiple-choice questions from representative fragment ${chunkNum}/${nChunks}.\n\nCRITICAL RULES:\n1. Questions based ONLY on THIS fragment.\n2. Prioritize high-value exam concepts, not minor details.\n3. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n4. 4 plausible options. correct_answer 0-3, ≈25% each.\n5. explanation: WHY correct (max 120 chars).\n6. topic: max 4 words.${topicInstruction}\n7. Mix: easy 25% (10pts/15s), medium 40% (20pts/30s), hard 35% (30pts/45s).${type === "quiz_gamified" ? "\n8. ADHD: short, punchy, direct." : ""}\n\n${isFirst ? `Output: {"title":"descriptive title","questions":[...]}` : `Output: {"questions":[...]}`}\nEach: {"question":"...","options":["A","B","C","D"],"correct_answer":0,"explanation":"...","topic":"...","points":10,"time_limit_seconds":30}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${requestedItemsPerChunk} questions. ONLY valid JSON.`
+        : `Generate EXACTLY ${requestedItemsPerChunk} flashcards from representative fragment ${chunkNum}/${nChunks}.\n\nCRITICAL RULES:\n1. Flashcards based ONLY on THIS fragment.\n2. Prioritize high-value study concepts, not minor details.\n3. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n4. front max 110 chars. back max 190 chars.\n5. topic max 4 words.${topicInstruction}\n6. difficulty: easy 25%, medium 40%, hard 35%.\n\n${isFirst ? `Output: {"title":"descriptive title","cards":[...]}` : `Output: {"cards":[...]}`}\nEach: {"front":"...","back":"...","topic":"...","difficulty":"medium"}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${requestedItemsPerChunk} flashcards. ONLY valid JSON.`;
       try {
         const aiData = await callAI(
           GEMINI_API_KEY,

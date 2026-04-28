@@ -11,6 +11,16 @@ export interface Subscription {
   is_trial?:           boolean;
 }
 
+const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "trialing", "ACTIVE", "TRIALING"];
+
+const normalizePlanName = (planName?: string | null) => {
+  const normalized = planName?.trim().toLowerCase().replace(/[_-]+/g, " ");
+  if (normalized === "hyperfocus master" || normalized === "hyperfocus") return "Hyperfocus Master";
+  if (normalized === "focus pro" || normalized === "pro") return "Focus Pro";
+  if (normalized === "free") return "Free";
+  return planName?.trim() || null;
+};
+
 export const useSubscription = () => {
   const { user } = useAuth();
   const [subscription, setSubscription] = useState<Subscription | null>(null);
@@ -25,14 +35,21 @@ export const useSubscription = () => {
 
     // Initial fetch
     const fetchSub = async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("subscriptions")
         .select("id, plan_name, status, current_period_end, trial_end_at, is_trial")
         .eq("user_id", user.id)
-        // FIX: accetta sia lowercase (nuovo standard) che uppercase (vecchi record PayPal)
-        .in("status", ["active", "trialing", "ACTIVE", "TRIALING"])
+        .in("status", ACTIVE_SUBSCRIPTION_STATUSES)
+        .order("created_at", { ascending: false })
+        .limit(1)
         .maybeSingle();
-      setSubscription(data);
+
+      if (error) {
+        console.error("[useSubscription] fetch error:", error);
+        setSubscription(null);
+      } else {
+        setSubscription(data ? { ...data, plan_name: normalizePlanName(data.plan_name) || data.plan_name } : null);
+      }
       setLoading(false);
     };
 
@@ -46,8 +63,8 @@ export const useSubscription = () => {
         { event: "*", schema: "public", table: "subscriptions", filter: `user_id=eq.${user.id}` },
         (payload) => {
           const updated = payload.new as Subscription | undefined;
-          if (updated && ["active", "trialing", "ACTIVE", "TRIALING"].includes(updated.status)) {
-            setSubscription(updated);
+          if (updated && ACTIVE_SUBSCRIPTION_STATUSES.includes(updated.status)) {
+            setSubscription({ ...updated, plan_name: normalizePlanName(updated.plan_name) || updated.plan_name });
           } else {
             setSubscription(null);
           }

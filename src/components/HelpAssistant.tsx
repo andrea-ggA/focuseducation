@@ -11,6 +11,10 @@ interface Message {
   content: string;
 }
 
+const supabasePublicKey =
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ??
+  import.meta.env.VITE_SUPABASE_ANON_KEY;
+
 const HELP_SYSTEM_PROMPT = `Sei l'assistente di supporto tecnico di FocusED. Il tuo UNICO scopo è aiutare gli utenti con problemi tecnici, domande sul servizio e richieste di assistenza.
 
 REGOLE FONDAMENTALI:
@@ -87,7 +91,7 @@ const HelpAssistant = () => {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${session.access_token}`,
-            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+            apikey: supabasePublicKey,
           },
           body: JSON.stringify({
             messages: [

@@ -46,6 +46,10 @@ const CATEGORY_META = {
   breaks: { icon: Clock, label: "Pause", color: "text-accent" },
 };
 
+const supabasePublicKey =
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ??
+  import.meta.env.VITE_SUPABASE_ANON_KEY;
+
 const AdhdCoaching = () => {
   const { user } = useAuth();
   const [activeCategory, setActiveCategory] = useState<string>("focus");
@@ -86,7 +90,7 @@ const AdhdCoaching = () => {
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${session.access_token}`,
-          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          apikey: supabasePublicKey,
         },
         body: JSON.stringify({
           messages: [{

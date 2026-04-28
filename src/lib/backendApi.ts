@@ -135,7 +135,13 @@ export async function getAuthToken(): Promise<string> {
 }
 
 function supabaseUrl() { return (import.meta.env.VITE_SUPABASE_URL as string) ?? ""; }
-function anonKey()     { return (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string) ?? ""; }
+function anonKey() {
+  return (
+    (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined) ??
+    (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ??
+    ""
+  );
+}
 function isValidEdgeFunctionName(name: string): boolean {
   return /^[a-z0-9-]{2,64}$/.test(name);
 }

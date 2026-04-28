@@ -176,7 +176,7 @@ async function extractTextFromPdf(arrayBuffer: ArrayBuffer): Promise<string> {
       }
     }
     if (lineBuffer.trim()) pageText += lineBuffer.trim();
-    if (pageText.trim()) pageTexts.push(pageText);
+    if (pageText.trim()) pageTexts.push(`[[PAGE:${i}]]\n${pageText}`);
   }
 
   return pageTexts.join("\n\n");

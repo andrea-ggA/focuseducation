@@ -54,14 +54,15 @@ const ASYNC_MODE_THRESHOLD = 100_000;
 // Timing: 16 chunk × ~5s (gemini-2.5-flash, concurrency 4) = ~20s. Sicuro.
 const CHUNK_MAX_CHARS = 6_000;
 const LARGE_DOC_CHUNK_MAX_CHARS = 12_000;
+const HUGE_DOC_CHUNK_MAX_CHARS = 18_000;
 const CHUNK_OVERLAP = 400; // ridotto proporzionalmente (era 800 per chunk da 28k)
 const CONCURRENCY = 4;
 const MIN_ITEMS_PER_CHUNK = 1;
 const MAX_ITEMS_PER_CHUNK = 8;
 const MIN_QUIZ_ITEMS = 40;
-const MAX_QUIZ_ITEMS = 180;
+const MAX_QUIZ_ITEMS = 200;
 const MIN_FLASHCARD_ITEMS = 48;
-const MAX_FLASHCARD_ITEMS = 220;
+const MAX_FLASHCARD_ITEMS = 260;
 
 interface ErrorWithStatus {
   status?: number;
@@ -100,6 +101,23 @@ interface ChunkResult {
   questions: QuizQuestionGen[];
   cards: FlashcardGen[];
   error?: string;
+}
+
+interface TextSection {
+  title: string;
+  content: string;
+  startPage: number | null;
+}
+
+interface ChunkPlan {
+  content: string;
+  sectionTitle: string;
+  sectionIndex: number;
+  sectionCount: number;
+  chunkIndex: number;
+  chunkCount: number;
+  pageStart: number | null;
+  targetItems: number;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -223,7 +241,9 @@ function chunkBySentences(text: string, maxChars = CHUNK_MAX_CHARS, overlap = CH
 // § 5 PARALLEL
 // ═══════════════════════════════════════════════════════════════════════════════
 function chunkSizeForDocument(textLength: number): number {
-  return textLength >= 180_000 ? LARGE_DOC_CHUNK_MAX_CHARS : CHUNK_MAX_CHARS;
+  if (textLength >= 600_000) return HUGE_DOC_CHUNK_MAX_CHARS;
+  if (textLength >= 180_000) return LARGE_DOC_CHUNK_MAX_CHARS;
+  return CHUNK_MAX_CHARS;
 }
 
 function sampleDocumentSlices(text: string, slices = 6, sliceChars = 4_000): string {
@@ -242,9 +262,9 @@ function sampleDocumentSlices(text: string, slices = 6, sliceChars = 4_000): str
 
 function targetItemCount(type: string, textLength: number): number {
   if (type === "flashcards") {
-    return Math.max(MIN_FLASHCARD_ITEMS, Math.min(MAX_FLASHCARD_ITEMS, Math.round(textLength / 1_600)));
+    return Math.max(MIN_FLASHCARD_ITEMS, Math.min(MAX_FLASHCARD_ITEMS, Math.round(textLength / 1_200)));
   }
-  return Math.max(MIN_QUIZ_ITEMS, Math.min(MAX_QUIZ_ITEMS, Math.round(textLength / 2_200)));
+  return Math.max(MIN_QUIZ_ITEMS, Math.min(MAX_QUIZ_ITEMS, Math.round(textLength / 1_800)));
 }
 
 function itemsPerChunk(totalTargetItems: number, chunkCount: number): number {
@@ -252,6 +272,154 @@ function itemsPerChunk(totalTargetItems: number, chunkCount: number): number {
     MIN_ITEMS_PER_CHUNK,
     Math.min(MAX_ITEMS_PER_CHUNK, Math.ceil(totalTargetItems / Math.max(1, chunkCount))),
   );
+}
+
+function distributeBudget(total: number, weights: number[], minPerBucket = 1): number[] {
+  if (weights.length === 0) return [];
+
+  const safeTotal = Math.max(total, weights.length * minPerBucket);
+  const safeWeights = weights.map((weight) => Math.max(1, weight));
+  const weightSum = safeWeights.reduce((sum, weight) => sum + weight, 0);
+  const base = new Array(weights.length).fill(minPerBucket);
+  let remainder = safeTotal - weights.length * minPerBucket;
+
+  const fractional = safeWeights.map((weight, index) => {
+    const exact = (weight / weightSum) * remainder;
+    const whole = Math.floor(exact);
+    base[index] += whole;
+    return { index, fraction: exact - whole };
+  });
+
+  remainder = safeTotal - base.reduce((sum, value) => sum + value, 0);
+  fractional.sort((a, b) => b.fraction - a.fraction);
+
+  for (let i = 0; i < remainder; i++) {
+    base[fractional[i % fractional.length].index] += 1;
+  }
+
+  return base;
+}
+
+function parsePageMarker(line: string): number | null {
+  const match = line.match(/^\[\[PAGE:(\d+)\]\]$/);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function normalizeSectionTitle(line: string): string {
+  return line.replace(/\s+/g, " ").replace(/\s*[:.-]\s*$/, "").trim();
+}
+
+function isLikelySectionHeading(line: string): boolean {
+  const title = normalizeSectionTitle(line);
+  if (title.length < 4 || title.length > 120) return false;
+  if (/[.!?;]$/.test(title)) return false;
+  if (/^\[\[PAGE:\d+\]\]$/.test(title)) return false;
+  if (/^(capitolo|cap\.|parte|sezione|titolo|introduzione|premessa|conclusioni?)(\b|:)/i.test(title)) return true;
+  if (/^[IVXLCDM]+(?:[\s.-]+.+)?$/i.test(title) && title.split(/\s+/).length <= 8) return true;
+
+  const letters = title.match(/[A-Za-zÀ-ÿ]/g) || [];
+  if (letters.length === 0) return false;
+  const uppercase = title.match(/[A-ZÀ-Ÿ]/g) || [];
+  const uppercaseRatio = uppercase.length / letters.length;
+  if (uppercaseRatio >= 0.85 && title.split(/\s+/).length <= 12) return true;
+
+  return /^[A-ZÀ-Ÿ][A-Za-zÀ-ÿ'’()-]+(?:\s+[A-ZÀ-Ÿ][A-Za-zÀ-ÿ'’()-]+){0,9}$/.test(title);
+}
+
+function splitIntoSections(text: string): TextSection[] {
+  const lines = text.split("\n");
+  const sections: TextSection[] = [];
+  let currentTitle = "Introduzione";
+  let currentPage: number | null = null;
+  let buffer: string[] = [];
+
+  const flush = () => {
+    const content = buffer.join("\n").trim();
+    if (!content) {
+      buffer = [];
+      return;
+    }
+    sections.push({ title: currentTitle, content, startPage: currentPage });
+    buffer = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      buffer.push("");
+      continue;
+    }
+
+    const page = parsePageMarker(line);
+    if (page !== null) {
+      currentPage = page;
+      continue;
+    }
+
+    if (isLikelySectionHeading(line)) {
+      const bufferedLength = buffer.join("\n").trim().length;
+      if (bufferedLength >= 1200) {
+        flush();
+        currentTitle = normalizeSectionTitle(line);
+        continue;
+      }
+      if (bufferedLength === 0) {
+        currentTitle = normalizeSectionTitle(line);
+        continue;
+      }
+    }
+
+    buffer.push(line);
+  }
+
+  flush();
+
+  if (sections.length <= 1) return sections.length === 1 ? sections : [{ title: "Documento", content: text, startPage: null }];
+
+  const merged: TextSection[] = [];
+  for (const section of sections) {
+    if (merged.length > 0 && section.content.length < 900) {
+      const previous = merged[merged.length - 1];
+      previous.content = `${previous.content}\n\n${section.title}\n${section.content}`.trim();
+      continue;
+    }
+    merged.push(section);
+  }
+
+  return merged;
+}
+
+function buildChunkPlan(text: string, type: string): ChunkPlan[] {
+  const sections = splitIntoSections(text);
+  const effectiveChunkSize = chunkSizeForDocument(text.length);
+  const totalTargetItems = targetItemCount(type, text.length);
+  const sectionWeights = sections.map((section) => section.content.length);
+  const sectionBudgets = distributeBudget(totalTargetItems, sectionWeights, 1);
+
+  const plan: ChunkPlan[] = [];
+  sections.forEach((section, sectionIndex) => {
+    const sectionChunks = chunkBySentences(section.content, effectiveChunkSize, CHUNK_OVERLAP);
+    if (sectionChunks.length === 0) {
+      sectionChunks.push(section.content.trim());
+    }
+    const sectionChunkCount = Math.max(1, sectionChunks.length);
+    const chunkBudgets = distributeBudget(sectionBudgets[sectionIndex], new Array(sectionChunkCount).fill(1), 1);
+
+    sectionChunks.forEach((chunk, chunkIndex) => {
+      plan.push({
+        content: chunk,
+        sectionTitle: section.title,
+        sectionIndex: sectionIndex + 1,
+        sectionCount: sections.length,
+        chunkIndex: chunkIndex + 1,
+        chunkCount: sectionChunkCount,
+        pageStart: section.startPage,
+        targetItems: Math.max(1, Math.min(MAX_ITEMS_PER_CHUNK, chunkBudgets[chunkIndex] || 1)),
+      });
+    });
+  });
+
+  return plan;
 }
 
 async function parallelLimit<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
@@ -956,28 +1124,28 @@ serve(async (req) => {
         ? `\nAVAILABLE TOPICS — assign EVERY item to one of these ONLY: ${JSON.stringify(topicOutline)}\nDo NOT invent new topic names.`
         : "";
 
-    // Step 1: chunking + pipeline AI parallela
-    const effectiveChunkSize = chunkSizeForDocument(cleanedLen);
-    const allChunks = chunkBySentences(cleanedContent, effectiveChunkSize, CHUNK_OVERLAP);
-    const chunks = allChunks;
-    const nChunks = chunks.length;
-    const totalTargetItems = targetItemCount(type, cleanedLen);
-    const requestedItemsPerChunk = itemsPerChunk(totalTargetItems, nChunks);
+    // Step 1: section-aware planning + pipeline AI parallela
+    const chunkPlan = buildChunkPlan(cleanedContent, type);
+    const nChunks = chunkPlan.length;
+    const totalTargetItems = chunkPlan.reduce((sum, chunk) => sum + chunk.targetItems, 0);
     const startTime = Date.now();
     const allQuestions: QuizQuestionGen[] = [];
     const allCards: FlashcardGen[] = [];
     let generatedTitle = title || "Studio";
     let completedCount = 0;
-    console.log(`Chunks: ${nChunks} full-coverage units at size ${effectiveChunkSize}, target ${totalTargetItems} items, ${requestedItemsPerChunk}/chunk`);
+    console.log(`Chunk plan: ${nChunks} units, target ${totalTargetItems} items, sections ${new Set(chunkPlan.map((chunk) => chunk.sectionTitle)).size}`);
 
-    const chunkTasks = chunks.map((chunk, idx) => async () => {
+    const chunkTasks = chunkPlan.map((plan, idx) => async () => {
+      const chunk = plan.content;
       const isFirst = idx === 0,
         chunkNum = idx + 1,
         isQ = type !== "flashcards";
-      const systemMsg = `You are a professional academic ${isQ ? "examiner" : "educator"}. Extract the most important concepts. Generate EXACTLY ${requestedItemsPerChunk} ${isQ ? "questions" : "flashcards"}. Respond ONLY with valid JSON. ${langInstruction}`;
+      const requestedItems = plan.targetItems;
+      const sectionContext = `\nSECTION ${plan.sectionIndex}/${plan.sectionCount}: ${plan.sectionTitle}${plan.pageStart ? ` (starts near page ${plan.pageStart})` : ""}`;
+      const systemMsg = `You are a professional academic ${isQ ? "examiner" : "educator"}. Extract the most important concepts. Generate EXACTLY ${requestedItems} ${isQ ? "questions" : "flashcards"}. Respond ONLY with valid JSON. ${langInstruction}`;
       const prompt = isQ
-        ? `Generate EXACTLY ${requestedItemsPerChunk} multiple-choice questions from fragment ${chunkNum}/${nChunks}.\n\nCRITICAL RULES:\n1. Questions based ONLY on THIS fragment.\n2. Prioritize high-value exam concepts, not minor details.\n3. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n4. 4 plausible options. correct_answer 0-3, ≈25% each.\n5. explanation: WHY correct (max 120 chars).\n6. topic: max 4 words.${topicInstruction}\n7. Mix: easy 25% (10pts/15s), medium 40% (20pts/30s), hard 35% (30pts/45s).${type === "quiz_gamified" ? "\n8. ADHD: short, punchy, direct." : ""}\n\n${isFirst ? `Output: {"title":"descriptive title","questions":[...]}` : `Output: {"questions":[...]}`}\nEach: {"question":"...","options":["A","B","C","D"],"correct_answer":0,"explanation":"...","topic":"...","points":10,"time_limit_seconds":30}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${requestedItemsPerChunk} questions. ONLY valid JSON.`
-        : `Generate EXACTLY ${requestedItemsPerChunk} flashcards from fragment ${chunkNum}/${nChunks}.\n\nCRITICAL RULES:\n1. Flashcards based ONLY on THIS fragment.\n2. Prioritize high-value study concepts, not minor details.\n3. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n4. front max 110 chars. back max 190 chars.\n5. topic max 4 words.${topicInstruction}\n6. difficulty: easy 25%, medium 40%, hard 35%.\n\n${isFirst ? `Output: {"title":"descriptive title","cards":[...]}` : `Output: {"cards":[...]}`}\nEach: {"front":"...","back":"...","topic":"...","difficulty":"medium"}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${requestedItemsPerChunk} flashcards. ONLY valid JSON.`;
+        ? `Generate EXACTLY ${requestedItems} multiple-choice questions from fragment ${chunkNum}/${nChunks}.${sectionContext}\n\nCRITICAL RULES:\n1. Questions based ONLY on THIS fragment.\n2. Cover the core concepts of THIS section, not the whole document.\n3. Prioritize high-value exam concepts, not minor details.\n4. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n5. 4 plausible options. correct_answer 0-3, ≈25% each.\n6. explanation: WHY correct (max 120 chars).\n7. topic: max 4 words.${topicInstruction}\n8. Mix: easy 25% (10pts/15s), medium 40% (20pts/30s), hard 35% (30pts/45s).${type === "quiz_gamified" ? "\n9. ADHD: short, punchy, direct." : ""}\n\n${isFirst ? `Output: {"title":"descriptive title","questions":[...]}` : `Output: {"questions":[...]}`}\nEach: {"question":"...","options":["A","B","C","D"],"correct_answer":0,"explanation":"...","topic":"...","points":10,"time_limit_seconds":30}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${requestedItems} questions. ONLY valid JSON.`
+        : `Generate EXACTLY ${requestedItems} flashcards from fragment ${chunkNum}/${nChunks}.${sectionContext}\n\nCRITICAL RULES:\n1. Flashcards based ONLY on THIS fragment.\n2. Cover the core concepts of THIS section, not the whole document.\n3. Prioritize high-value study concepts, not minor details.\n4. IGNORE: page numbers, headers, footers, bibliography, figure captions, URLs.\n5. front max 110 chars. back max 190 chars.\n6. topic max 4 words.${topicInstruction}\n7. difficulty: easy 25%, medium 40%, hard 35%.\n\n${isFirst ? `Output: {"title":"descriptive title","cards":[...]}` : `Output: {"cards":[...]}`}\nEach: {"front":"...","back":"...","topic":"...","difficulty":"medium"}\n\n--- FRAGMENT ${chunkNum}/${nChunks} ---\n${chunk}\n--- END ---\nEXACTLY ${requestedItems} flashcards. ONLY valid JSON.`;
       try {
         const aiData = await callAI(
           GEMINI_API_KEY,
@@ -1021,9 +1189,13 @@ serve(async (req) => {
           const elapsed = Date.now() - startTime;
           const etaMs = completedCount > 0 ? Math.round((elapsed / completedCount) * (nChunks - completedCount)) : null;
           const eta = etaMs ? ` · ~${Math.max(1, Math.ceil(etaMs / 1000))}s` : "";
+          const nextChunk = chunkPlan[Math.min(completedCount, Math.max(0, nChunks - 1))];
+          const stage = nextChunk
+            ? `${nextChunk.sectionTitle} · blocco ${nextChunk.chunkIndex}/${nextChunk.chunkCount}`
+            : `blocco ${Math.min(completedCount + 1, nChunks)}/${nChunks}`;
           await updateJob(supabase, jobId, {
             total_items: soFar,
-            progress_message: `Sezione ${Math.min(completedCount + 1, nChunks)} di ${nChunks}… ${soFar} elementi${eta}`,
+            progress_message: `${stage} · ${soFar} elementi${eta}`,
             progress_pct: Math.round((completedCount / nChunks) * 100),
           });
         } catch {

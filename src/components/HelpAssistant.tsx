@@ -11,9 +11,10 @@ interface Message {
   content: string;
 }
 
-const supabasePublicKey =
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ??
-  import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabasePublicKey = [
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+].find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim() ?? "";
 
 const HELP_SYSTEM_PROMPT = `Sei l'assistente di supporto tecnico di FocusED. Il tuo UNICO scopo è aiutare gli utenti con problemi tecnici, domande sul servizio e richieste di assistenza.
 

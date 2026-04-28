@@ -136,11 +136,10 @@ export async function getAuthToken(): Promise<string> {
 
 function supabaseUrl() { return (import.meta.env.VITE_SUPABASE_URL as string) ?? ""; }
 function anonKey() {
-  return (
-    (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined) ??
-    (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ??
-    ""
-  );
+  return [
+    import.meta.env.VITE_SUPABASE_ANON_KEY,
+    import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+  ].find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim() ?? "";
 }
 function isValidEdgeFunctionName(name: string): boolean {
   return /^[a-z0-9-]{2,64}$/.test(name);

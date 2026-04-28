@@ -3,22 +3,23 @@ import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./types";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_PUBLISHABLE_KEY =
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ??
-  import.meta.env.VITE_SUPABASE_ANON_KEY;
+const SUPABASE_PUBLIC_KEY = [
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+].find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
 
 if (!SUPABASE_URL) {
   throw new Error("Missing VITE_SUPABASE_URL");
 }
 
-if (!SUPABASE_PUBLISHABLE_KEY) {
+if (!SUPABASE_PUBLIC_KEY) {
   throw new Error("Missing VITE_SUPABASE_PUBLISHABLE_KEY or VITE_SUPABASE_ANON_KEY");
 }
 
 // Import the supabase client like this:
 // import { supabase } from "@/integrations/supabase/client";
 
-export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
+export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLIC_KEY, {
   auth: {
     storage: localStorage,
     persistSession: true,

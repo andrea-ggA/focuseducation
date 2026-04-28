@@ -46,9 +46,10 @@ const CATEGORY_META = {
   breaks: { icon: Clock, label: "Pause", color: "text-accent" },
 };
 
-const supabasePublicKey =
-  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ??
-  import.meta.env.VITE_SUPABASE_ANON_KEY;
+const supabasePublicKey = [
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+].find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim() ?? "";
 
 const AdhdCoaching = () => {
   const { user } = useAuth();

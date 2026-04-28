@@ -20,6 +20,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Upload, FileText, Loader2, Sparkles, BookOpen, Zap, Brain, Map, Lock, Camera, X, ScrollText, BookMarked, Youtube } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
@@ -49,6 +50,7 @@ import {
   ACTIVE_GENERATION_JOB_STATUSES,
   GENERATION_JOB_STATUS,
   isActiveGenerationJobStatus,
+  normalizeGenerationJobStatus,
 } from "@/lib/generationJobState";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
@@ -76,6 +78,60 @@ interface PdfTextItem {
 
 const getErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
+
+interface GenerationProgressJob {
+  id: string;
+  status: string;
+  content_type: string;
+  title: string | null;
+  result_id: string | null;
+  error: string | null;
+  progress_message: string | null;
+  progress_pct: number | null;
+}
+
+interface ActiveGenerationProgress {
+  jobId: string;
+  status: string;
+  contentType: string;
+  title: string;
+  resultId: string | null;
+  error: string | null;
+  message: string;
+  progressPct: number;
+}
+
+const GENERATION_TYPE_LABELS: Record<string, string> = {
+  quiz: "Quiz",
+  flashcards: "Flashcard",
+};
+
+const clampProgress = (value: number | null | undefined) =>
+  Math.max(0, Math.min(100, typeof value === "number" && Number.isFinite(value) ? value : 0));
+
+const buildGenerationProgress = (job: GenerationProgressJob): ActiveGenerationProgress => {
+  const status = normalizeGenerationJobStatus(job.status) ?? job.status;
+  const typeLabel = GENERATION_TYPE_LABELS[job.content_type] || job.content_type || "contenuto";
+  const fallbackMessage =
+    status === GENERATION_JOB_STATUS.PENDING
+      ? "Preparazione generazione..."
+      : status === GENERATION_JOB_STATUS.COMPLETED
+        ? `${typeLabel} pronto. Apertura in corso...`
+        : status === GENERATION_JOB_STATUS.ERROR
+          ? job.error || "Generazione fallita."
+          : `Generazione ${typeLabel.toLowerCase()} in corso...`;
+
+  return {
+    jobId: job.id,
+    status,
+    contentType: job.content_type,
+    title: job.title || "Studio",
+    resultId: job.result_id,
+    error: job.error,
+    message: job.progress_message || fallbackMessage,
+    progressPct: status === GENERATION_JOB_STATUS.COMPLETED ? 100 : clampProgress(job.progress_pct),
+  };
+};
 
 
 // ═══ § 3 FILE HELPERS ══════════════════════════════════════════════════════════
@@ -174,7 +230,9 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
   const [youtubeTitle, setYoutubeTitle] = useState<string | null>(null);
   const [loadingYoutube, setLoadingYoutube] = useState(false);
   const [youtubeElapsed, setYoutubeElapsed] = useState(0);
+  const [activeGeneration, setActiveGeneration] = useState<ActiveGenerationProgress | null>(null);
   const youtubeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const completedGenerationIdsRef = useRef<Set<string>>(new Set());
 
   // Cleanup blob URLs on unmount to prevent memory leaks
   useEffect(() => {
@@ -197,6 +255,76 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
   }, [loadingYoutube]);
 
   const formatTime = useCallback((s: number) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`, []);
+
+  useEffect(() => {
+    if (!user || !activeGeneration?.jobId) return;
+
+    let isMounted = true;
+    const jobId = activeGeneration.jobId;
+
+    const applyJob = (job: GenerationProgressJob) => {
+      if (!isMounted) return;
+
+      const nextProgress = buildGenerationProgress(job);
+      setActiveGeneration(nextProgress);
+
+      if (
+        nextProgress.status === GENERATION_JOB_STATUS.COMPLETED &&
+        nextProgress.resultId &&
+        !completedGenerationIdsRef.current.has(nextProgress.jobId)
+      ) {
+        completedGenerationIdsRef.current.add(nextProgress.jobId);
+        setGenerating(null);
+        toast({ title: "Generazione completata", description: "I contenuti sono pronti. Apertura in corso..." });
+        if (nextProgress.contentType === "flashcards") onFlashcardsGenerated(nextProgress.resultId);
+        else onQuizGenerated(nextProgress.resultId);
+        window.setTimeout(() => {
+          if (isMounted) setActiveGeneration(null);
+        }, 1500);
+        return;
+      }
+
+      if (
+        nextProgress.status === GENERATION_JOB_STATUS.ERROR ||
+        nextProgress.status === GENERATION_JOB_STATUS.CANCELLED
+      ) {
+        setGenerating(null);
+      }
+    };
+
+    const fetchJob = async () => {
+      const { data, error } = await supabase
+        .from("generation_jobs")
+        .select("id,status,content_type,title,result_id,error,progress_message,progress_pct")
+        .eq("id", jobId)
+        .eq("user_id", user.id)
+        .single();
+
+      if (!isMounted || error || !data) return;
+      applyJob(data as GenerationProgressJob);
+    };
+
+    void fetchJob();
+
+    const channel = supabase
+      .channel(`upload_generation_progress:${jobId}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "generation_jobs", filter: `id=eq.${jobId}` },
+        (payload) => {
+          if (payload.new) applyJob(payload.new as GenerationProgressJob);
+        },
+      )
+      .subscribe();
+
+    const pollId = window.setInterval(fetchJob, 2500);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(pollId);
+      supabase.removeChannel(channel);
+    };
+  }, [activeGeneration?.jobId, onFlashcardsGenerated, onQuizGenerated, toast, user]);
 
 
   // ─── § 6 HANDLER: FILE ──────────────────────────────────────────────────────
@@ -426,6 +554,17 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
       if (jobError || !job?.id) throw new Error("Impossibile avviare il job di generazione. Riprova.");
       const jobId = job.id;
       createdJobId = jobId;
+      completedGenerationIdsRef.current.delete(jobId);
+      setActiveGeneration({
+        jobId,
+        status: GENERATION_JOB_STATUS.PENDING,
+        contentType: isFlash ? "flashcards" : "quiz",
+        title: docTitle,
+        resultId: null,
+        error: null,
+        message: "Preparazione generazione...",
+        progressPct: 0,
+      });
 
       await supabase
         .from("generation_jobs")
@@ -433,7 +572,13 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         .eq("id", jobId)
         .in("status", [GENERATION_JOB_STATUS.PENDING]);
 
-      toast({ title: "🚀 Generazione avviata", description: `Spesi ${CREDIT_COSTS[creditAction]} cr. Elaborazione in corso...` });
+      setActiveGeneration((prev) =>
+        prev?.jobId === jobId
+          ? { ...prev, status: GENERATION_JOB_STATUS.PROCESSING, message: "Generazione avviata...", progressPct: 2 }
+          : prev,
+      );
+
+      toast({ title: "Generazione avviata", description: `Spesi ${CREDIT_COSTS[creditAction]} cr. Puoi seguire il progresso qui sotto.` });
 
       // Il livello distrazione viene passato come parametro separato, non nel testo.
       // In precedenza veniva preposto come "[LIVELLO_DISTRAZIONE:X]\n" al testo —
@@ -496,10 +641,24 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
                 result_id: resultId,
                 completed_at: new Date().toISOString(),
                 error: null,
+                progress_pct: 100,
+                progress_message: "Generazione completata",
               })
               .eq("id", job.id)
               .in("status", [...ACTIVE_GENERATION_JOB_STATUSES]);
           }
+          completedGenerationIdsRef.current.add(job.id);
+          setActiveGeneration((prev) =>
+            prev?.jobId === job.id
+              ? {
+                  ...prev,
+                  status: GENERATION_JOB_STATUS.COMPLETED,
+                  resultId,
+                  message: "Generazione completata",
+                  progressPct: 100,
+                }
+              : prev,
+          );
           if (isFlash) onFlashcardsGenerated(resultId);
           else         onQuizGenerated(resultId);
           toast({ title: "✅ Generazione completata!", description: "I contenuti sono pronti nella tua libreria." });
@@ -509,10 +668,9 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
         setGenerating(null);
 
       } else if (result.mode === "async_edge") {
-        // Percorso async: rilascia subito il loader locale e lascia
-        // il tracking del job al GenerationNotifier globale via Realtime.
-        toast({ title: "⏳ Generazione in background", description: "La generazione continua in background. Riceverai una notifica al termine." });
-        setGenerating(null); // rilascia subito il loader locale — GenerationNotifier gestisce il resto
+        // Percorso async: il backend continua a lavorare e questa card resta
+        // agganciata al job via Realtime + polling fallback.
+        toast({ title: "Generazione in corso", description: "Puoi seguire il progresso in tempo reale nella barra qui sotto." });
 
         // Safety: dopo 8 minuti ricarica lo stato crediti e lascia la decisione finale
         // al backend/notifier, evitando di forzare errori lato client su job ancora vivi.
@@ -520,7 +678,12 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
           const { data: jc } = await supabase.from("generation_jobs").select("status, result_id").eq("id", result.jobId).single();
           if (!jc || isActiveGenerationJobStatus(jc.status)) {
             await refreshCredits();
-          } else if (jc.status === GENERATION_JOB_STATUS.COMPLETED && jc.result_id) {
+          } else if (
+            jc.status === GENERATION_JOB_STATUS.COMPLETED &&
+            jc.result_id &&
+            !completedGenerationIdsRef.current.has(result.jobId)
+          ) {
+            completedGenerationIdsRef.current.add(result.jobId);
             if (isFlash) onFlashcardsGenerated(jc.result_id);
             else         onQuizGenerated(jc.result_id);
           }
@@ -857,6 +1020,42 @@ const DocumentUpload = ({ onQuizGenerated, onFlashcardsGenerated, hasFullAccess,
               <span className="text-[10px] opacity-70">{hasGamified ? `${CREDIT_COSTS.quiz} cr · Gamificato` : "Piano ADHD+"}</span>
             </Button>
           </motion.div>
+
+          {activeGeneration && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="rounded-xl border border-primary/25 bg-primary/5 p-4 shadow-soft"
+            >
+              <div className="flex items-start gap-3">
+                {activeGeneration.status === GENERATION_JOB_STATUS.ERROR ? (
+                  <X className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+                ) : (
+                  <Loader2 className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-primary" />
+                )}
+                <div className="min-w-0 flex-1 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-card-foreground">
+                        {GENERATION_TYPE_LABELS[activeGeneration.contentType] || "Generazione"} in lavorazione
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">{activeGeneration.title}</p>
+                    </div>
+                    <span className="shrink-0 rounded-full bg-background px-2 py-1 text-xs font-semibold text-primary">
+                      {activeGeneration.progressPct}%
+                    </span>
+                  </div>
+                  <Progress value={activeGeneration.progressPct} className="h-2" />
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs text-card-foreground">{activeGeneration.message}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Aggiornamento live: puoi restare qui, apriremo il risultato appena pronto.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
 
           {/* ADHD Tools row - only show when text content available */}
           {textContent.trim() && (

@@ -101,6 +101,226 @@ export function chunkBySentences(text: string, maxChars = 28_000, overlap = 800)
   return chunks;
 }
 
+export interface TextSection {
+  title: string;
+  content: string;
+  startPage: number | null;
+}
+
+export interface ChunkPlan {
+  content: string;
+  sectionTitle: string;
+  sectionIndex: number;
+  sectionCount: number;
+  chunkIndex: number;
+  chunkCount: number;
+  pageStart: number | null;
+  targetItems: number;
+}
+
+export interface ChunkPlanOptions {
+  overlap?: number;
+  baseChunkChars?: number;
+  largeDocChunkChars?: number;
+  hugeDocChunkChars?: number;
+  largeDocThreshold?: number;
+  hugeDocThreshold?: number;
+  targetItems?: number;
+  minItemsPerChunk?: number;
+  maxItemsPerChunk?: number;
+}
+
+function resolveChunkSize(textLength: number, options: ChunkPlanOptions): number {
+  const baseChunkChars = options.baseChunkChars ?? 6_000;
+  const largeDocChunkChars = options.largeDocChunkChars ?? 12_000;
+  const hugeDocChunkChars = options.hugeDocChunkChars ?? 18_000;
+  const largeDocThreshold = options.largeDocThreshold ?? 180_000;
+  const hugeDocThreshold = options.hugeDocThreshold ?? 600_000;
+
+  if (textLength >= hugeDocThreshold) return hugeDocChunkChars;
+  if (textLength >= largeDocThreshold) return largeDocChunkChars;
+  return baseChunkChars;
+}
+
+export function sampleDocumentSlices(text: string, slices = 6, sliceChars = 4_000): string {
+  if (text.length <= slices * sliceChars) return text;
+
+  const parts: string[] = [];
+  for (let i = 0; i < slices; i++) {
+    const start = Math.floor((i * Math.max(0, text.length - sliceChars)) / Math.max(1, slices - 1));
+    const segment = text.substring(start, start + sliceChars).trim();
+    if (segment.length > 0) {
+      parts.push(`[[SLICE ${i + 1}/${slices}]]\n${segment}`);
+    }
+  }
+  return parts.join("\n\n");
+}
+
+export function buildRepresentativePreview(text: string, maxChars = 50_000, slices = 8): string {
+  if (text.length <= maxChars) return text;
+
+  const safeSlices = Math.max(2, Math.min(slices, Math.max(2, Math.floor(maxChars / 1_800))));
+  const markerBudget = safeSlices * 24;
+  const sliceChars = Math.max(1_200, Math.floor((maxChars - markerBudget) / safeSlices));
+  return sampleDocumentSlices(text, safeSlices, sliceChars);
+}
+
+export function distributeBudget(total: number, weights: number[], minPerBucket = 1): number[] {
+  if (weights.length === 0) return [];
+
+  const safeTotal = Math.max(total, weights.length * minPerBucket);
+  const safeWeights = weights.map((weight) => Math.max(1, weight));
+  const weightSum = safeWeights.reduce((sum, weight) => sum + weight, 0);
+  const base = new Array(weights.length).fill(minPerBucket);
+  let remainder = safeTotal - weights.length * minPerBucket;
+
+  const fractional = safeWeights.map((weight, index) => {
+    const exact = (weight / weightSum) * remainder;
+    const whole = Math.floor(exact);
+    base[index] += whole;
+    return { index, fraction: exact - whole };
+  });
+
+  remainder = safeTotal - base.reduce((sum, value) => sum + value, 0);
+  fractional.sort((a, b) => b.fraction - a.fraction);
+
+  for (let i = 0; i < remainder; i++) {
+    base[fractional[i % fractional.length].index] += 1;
+  }
+
+  return base;
+}
+
+function parsePageMarker(line: string): number | null {
+  const match = line.match(/^\[\[PAGE:(\d+)\]\]$/);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function normalizeSectionTitle(line: string): string {
+  return line.replace(/\s+/g, " ").replace(/\s*[:.-]\s*$/, "").trim();
+}
+
+function isLikelySectionHeading(line: string): boolean {
+  const title = normalizeSectionTitle(line);
+  if (title.length < 4 || title.length > 120) return false;
+  if (/[.!?;]$/.test(title)) return false;
+  if (/^\[\[PAGE:\d+\]\]$/.test(title)) return false;
+  if (/^(capitolo|cap\.|parte|sezione|titolo|introduzione|premessa|conclusioni?)(\b|:)/i.test(title)) return true;
+  if (/^[IVXLCDM]+(?:[\s.-]+.+)?$/i.test(title) && title.split(/\s+/).length <= 8) return true;
+
+  const letters = title.match(/[A-Za-zÀ-ÿ]/g) || [];
+  if (letters.length === 0) return false;
+  const uppercase = title.match(/[A-ZÀ-Ÿ]/g) || [];
+  const uppercaseRatio = uppercase.length / letters.length;
+  if (uppercaseRatio >= 0.85 && title.split(/\s+/).length <= 12) return true;
+
+  return /^[A-ZÀ-Ÿ][A-Za-zÀ-ÿ'’()-]+(?:\s+[A-ZÀ-Ÿ][A-Za-zÀ-ÿ'’()-]+){0,9}$/.test(title);
+}
+
+export function splitIntoSections(text: string, minSectionChars = 1_200, minStandaloneSectionChars = 900): TextSection[] {
+  const lines = text.split("\n");
+  const sections: TextSection[] = [];
+  let currentTitle = "Introduzione";
+  let currentPage: number | null = null;
+  let buffer: string[] = [];
+
+  const flush = () => {
+    const content = buffer.join("\n").trim();
+    if (!content) {
+      buffer = [];
+      return;
+    }
+    sections.push({ title: currentTitle, content, startPage: currentPage });
+    buffer = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      buffer.push("");
+      continue;
+    }
+
+    const page = parsePageMarker(line);
+    if (page !== null) {
+      currentPage = page;
+      continue;
+    }
+
+    if (isLikelySectionHeading(line)) {
+      const bufferedLength = buffer.join("\n").trim().length;
+      if (bufferedLength >= minSectionChars) {
+        flush();
+        currentTitle = normalizeSectionTitle(line);
+        continue;
+      }
+      if (bufferedLength === 0) {
+        currentTitle = normalizeSectionTitle(line);
+        continue;
+      }
+    }
+
+    buffer.push(line);
+  }
+
+  flush();
+
+  if (sections.length <= 1) {
+    return sections.length === 1 ? sections : [{ title: "Documento", content: text, startPage: null }];
+  }
+
+  const merged: TextSection[] = [];
+  for (const section of sections) {
+    if (merged.length > 0 && section.content.length < minStandaloneSectionChars) {
+      const previous = merged[merged.length - 1];
+      previous.content = `${previous.content}\n\n${section.title}\n${section.content}`.trim();
+      continue;
+    }
+    merged.push(section);
+  }
+
+  return merged;
+}
+
+export function buildChunkPlan(text: string, options: ChunkPlanOptions = {}): ChunkPlan[] {
+  const overlap = options.overlap ?? 800;
+  const minItemsPerChunk = options.minItemsPerChunk ?? 1;
+  const maxItemsPerChunk = options.maxItemsPerChunk ?? 12;
+  const sections = splitIntoSections(text);
+  const chunkSize = resolveChunkSize(text.length, options);
+  const totalTargetItems = options.targetItems ?? sections.length;
+  const sectionWeights = sections.map((section) => section.content.length);
+  const sectionBudgets = distributeBudget(totalTargetItems, sectionWeights, minItemsPerChunk);
+
+  const plan: ChunkPlan[] = [];
+  sections.forEach((section, sectionIndex) => {
+    const sectionChunks = chunkBySentences(section.content, chunkSize, overlap);
+    if (sectionChunks.length === 0) {
+      sectionChunks.push(section.content.trim());
+    }
+    const chunkBudgets = distributeBudget(
+      sectionBudgets[sectionIndex],
+      new Array(Math.max(1, sectionChunks.length)).fill(1),
+      minItemsPerChunk,
+    );
+
+    sectionChunks.forEach((chunk, chunkIndex) => {
+      plan.push({
+        content: chunk,
+        sectionTitle: section.title,
+        sectionIndex: sectionIndex + 1,
+        sectionCount: sections.length,
+        chunkIndex: chunkIndex + 1,
+        chunkCount: sectionChunks.length,
+        pageStart: section.startPage,
+        targetItems: Math.max(1, Math.min(maxItemsPerChunk, chunkBudgets[chunkIndex] || 1)),
+      });
+    });
+  });
+
+  return plan;
+}
+
 /** Firme linguistiche per detection euristica (nessuna chiamata AI) */
 const LANG_SIGS: Record<string, string[]> = {
   italiano: ["della","delle","degli","nella","sono","anche","questo","questa","come","quando","però","quindi"],

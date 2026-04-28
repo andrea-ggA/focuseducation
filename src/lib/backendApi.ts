@@ -41,6 +41,25 @@ function normalizeBackendUrl(raw: string | undefined): string {
   return DEFAULT_BACKEND_URL;
 }
 
+function buildRepresentativeDocumentContext(text: string, maxChars = 80_000, slices = 8): string {
+  if (text.length <= maxChars) return text;
+
+  const safeSlices = Math.max(2, Math.min(slices, Math.max(2, Math.floor(maxChars / 1_800))));
+  const markerBudget = safeSlices * 24;
+  const sliceChars = Math.max(1_200, Math.floor((maxChars - markerBudget) / safeSlices));
+  const parts: string[] = [];
+
+  for (let index = 0; index < safeSlices; index++) {
+    const start = Math.floor((index * Math.max(0, text.length - sliceChars)) / Math.max(1, safeSlices - 1));
+    const segment = text.substring(start, start + sliceChars).trim();
+    if (segment) {
+      parts.push(`[[SLICE ${index + 1}/${safeSlices}]]\n${segment}`);
+    }
+  }
+
+  return parts.join("\n\n");
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // § 1 CONFIG & TIPI
 // BACKEND_URL: Cloud Run. ASYNC_THRESHOLD: sopra questa soglia usa asyncMode.
@@ -254,7 +273,7 @@ export async function streamTutorChat(
 
   const body: UnknownRecord = { messages: sanitizedMessages };
   if (documentContext) {
-    const trimmedDocumentContext = documentContext.slice(0, 80_000);
+    const trimmedDocumentContext = buildRepresentativeDocumentContext(documentContext, 80_000, 8);
     body.documentContext = trimmedDocumentContext;
     body.ctx = trimmedDocumentContext;
   }

@@ -1,5 +1,12 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { cleanText, removePageArtifacts, chunkBySentences, detectLanguageHeuristic, parallelLimit } from "../_shared/textUtils.ts";
+import {
+  buildChunkPlan,
+  buildRepresentativePreview,
+  cleanText,
+  detectLanguageHeuristic,
+  parallelLimit,
+  removePageArtifacts,
+} from "../_shared/textUtils.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -18,6 +25,9 @@ type ChatMessage = { role: ChatRole; content: string | ChatVisionPart[] };
 
 const getErrorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
+
+const normalizePlanName = (value: string | null | undefined) =>
+  (value || "").trim().toLowerCase();
 
 async function callAI(apiKey: string, messages: ChatMessage[], model = "gemini-2.5-flash", retries = 3, maxTokens = 65536): Promise<Record<string, unknown>> {
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -75,14 +85,21 @@ Deno.serve(async (req) => {
     }
 
     // Verifica piano Hyperfocus Master (accetta anche lowercase/uppercase per fix PayPal)
-    const { data: sub } = await supabase
+    const { data: subscriptions } = await supabase
       .from("subscriptions")
-      .select("plan_name, status")
+      .select("plan_name, status, current_period_end, updated_at, created_at")
       .eq("user_id", authUser.id)
       .in("status", ["active", "trialing", "ACTIVE", "TRIALING"])
-      .maybeSingle();
+      .order("current_period_end", { ascending: false, nullsFirst: false })
+      .order("updated_at", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false })
+      .limit(5);
 
-    if (!sub || sub.plan_name !== "Hyperfocus Master") {
+    const hasHyperfocusMaster = (subscriptions || []).some((sub) =>
+      normalizePlanName(sub.plan_name) === "hyperfocus master"
+    );
+
+    if (!hasHyperfocusMaster) {
       return new Response(JSON.stringify({ error: "Questa funzione è riservata al piano Hyperfocus Master." }), {
         status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -190,7 +207,9 @@ REGOLE:
       // Language detection + first chunk setup IN PARALLELO
       if (jobId) await supabase.from("generation_jobs").update({ progress_message: "Analisi documento…" }).eq("id", jobId);
 
-      const heuristicLang = detectLanguageHeuristic(cleanedContent.substring(0, 1000));
+      const languageSample = buildRepresentativePreview(cleanedContent, 9_000, 6)
+        .replace(/\[\[SLICE \d+\/\d+\]\]\n/g, "");
+      const heuristicLang = detectLanguageHeuristic(languageSample);
       const docLanguage = heuristicLang || await callAI(GEMINI_API_KEY,
         [{ role: "user", content: `Detect language. ONE word only (italiano/english/español/français/deutsch). Text: "${cleanedContent.substring(0, 400)}"` }],
         "gemini-2.5-flash", 2, 15,
@@ -204,12 +223,19 @@ REGOLE:
 
       // Chunking a confini di frase (era word-based)
       // Summary: chunk più grandi (40k) perché il modello vede contesto maggiore
-      const MAX_CHARS   = 40_000;
       const OVERLAP     = 1200; // overlap più ampio per continuità del riassunto
       const CONCURRENCY = 4;    // 4 chunk in parallelo per summary
 
-      const chunks = chunkBySentences(cleanedContent, MAX_CHARS, OVERLAP);
-      console.log(`Chunks: ${chunks.length} (concurrency ${CONCURRENCY})`);
+      const chunkPlan = buildChunkPlan(cleanedContent, {
+        overlap: 1_200,
+        baseChunkChars: 40_000,
+        largeDocChunkChars: 52_000,
+        hugeDocChunkChars: 60_000,
+        largeDocThreshold: 160_000,
+        hugeDocThreshold: 480_000,
+      });
+      const chunks = chunkPlan.map((chunk) => chunk.content);
+      console.log(`Summary chunk plan: ${chunks.length} units across ${new Set(chunkPlan.map((chunk) => chunk.sectionTitle)).size} sections`);
 
       const systemPrompt = `You are an expert academic educator specializing in study materials. ${langNote}`;
       const startTime = Date.now();
@@ -228,10 +254,16 @@ REGOLE:
         const chunkTasks = chunks.map((chunk, idx) => async () => {
           const chunkNum = idx + 1;
           const isFirst  = idx === 0;
+          const plan = chunkPlan[idx];
+          const sectionContext = `Section ${plan.sectionIndex}/${plan.sectionCount}: ${plan.sectionTitle}${plan.pageStart ? ` (starts near page ${plan.pageStart})` : ""}. Fragment ${plan.chunkIndex}/${plan.chunkCount}.`;
 
-          const chunkPrompt = isFirst
+          let chunkPrompt = isFirst
             ? `${formatInstructions[format]}\n\n${langNote}\n\nQuesto è il frammento ${chunkNum} di ${chunks.length}. Genera il ${FORMAT_NAMES[format]} per QUESTO frammento.\n\n--- TESTO (${chunkNum}/${chunks.length}) ---\n${chunk}\n--- FINE ---`
             : `Continua il ${FORMAT_NAMES[format]} per il frammento successivo. Stesso stile e formato del precedente.\n${langNote}\n\n--- TESTO (${chunkNum}/${chunks.length}) ---\n${chunk}\n--- FINE ---`;
+
+          chunkPrompt = isFirst
+            ? `${formatInstructions[format]}\n\n${langNote}\n\n${sectionContext}\nGenera il ${FORMAT_NAMES[format]} per QUESTO frammento. Copri i concetti centrali della sezione e non limitarti all'inizio del documento.\n\n--- TESTO (${chunkNum}/${chunks.length}) ---\n${chunk}\n--- FINE ---`
+            : `Continua il ${FORMAT_NAMES[format]} per il frammento successivo. Mantieni lo stesso stile ma tratta questa sezione come parte autonoma del documento.\n${langNote}\n\n${sectionContext}\n\n--- TESTO (${chunkNum}/${chunks.length}) ---\n${chunk}\n--- FINE ---`;
 
           try {
             const aiData = await callAI(GEMINI_API_KEY, [
@@ -256,6 +288,10 @@ REGOLE:
               const etaMs   = completedCount > 0
                 ? Math.round((elapsed / completedCount) * (chunks.length - completedCount)) : null;
               const eta     = etaMs ? ` · ~${Math.max(1, Math.ceil(etaMs/1000))}s` : "";
+              const nextChunk = chunkPlan[Math.min(completedCount, Math.max(0, chunkPlan.length - 1))];
+              const stage = nextChunk
+                ? `${nextChunk.sectionTitle} · blocco ${nextChunk.chunkIndex}/${nextChunk.chunkCount}`
+                : `Sezione ${Math.min(completedCount+1,chunks.length)} di ${chunks.length}`;
               await supabase.from("generation_jobs").update({
                 progress_message: `Sezione ${Math.min(completedCount+1,chunks.length)} di ${chunks.length}…${eta}`,
                 progress_pct:     Math.round((completedCount / chunks.length) * 100),

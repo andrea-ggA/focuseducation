@@ -58,7 +58,8 @@ const HUGE_DOC_CHUNK_MAX_CHARS = 18_000;
 const CHUNK_OVERLAP = 400; // ridotto proporzionalmente (era 800 per chunk da 28k)
 const CONCURRENCY = 4;
 const MIN_ITEMS_PER_CHUNK = 1;
-const MAX_ITEMS_PER_CHUNK = 8;
+const MAX_ITEMS_PER_CHUNK = 14;
+const MAX_GENERATION_UNITS = 24;
 const MIN_QUIZ_ITEMS = 40;
 const MAX_QUIZ_ITEMS = 200;
 const MIN_FLASHCARD_ITEMS = 48;
@@ -419,7 +420,53 @@ function buildChunkPlan(text: string, type: string): ChunkPlan[] {
     });
   });
 
-  return plan;
+  return compactChunkPlan(plan, type, text.length);
+}
+
+function compactChunkPlan(plan: ChunkPlan[], type: string, textLength: number): ChunkPlan[] {
+  if (plan.length <= MAX_GENERATION_UNITS) return plan;
+
+  const totalTargetItems = targetItemCount(type, textLength);
+  const targetUnits = Math.min(MAX_GENERATION_UNITS, plan.length);
+  const groups: ChunkPlan[][] = [];
+
+  for (let groupIndex = 0; groupIndex < targetUnits; groupIndex++) {
+    const start = Math.floor((groupIndex * plan.length) / targetUnits);
+    const end = Math.floor(((groupIndex + 1) * plan.length) / targetUnits);
+    const group = plan.slice(start, Math.max(start + 1, end));
+    groups.push(group);
+  }
+
+  const groupBudgets = distributeBudget(
+    totalTargetItems,
+    groups.map((group) => group.reduce((sum, chunk) => sum + chunk.content.length, 0)),
+    MIN_ITEMS_PER_CHUNK,
+  );
+
+  return groups.map((group, groupIndex) => {
+    const first = group[0];
+    const last = group[group.length - 1];
+    const sectionTitle =
+      first.sectionTitle === last.sectionTitle
+        ? first.sectionTitle
+        : `${first.sectionTitle} -> ${last.sectionTitle}`;
+    const content = group
+      .map((chunk) =>
+        `[[SECTION: ${chunk.sectionTitle}${chunk.pageStart ? ` | page ${chunk.pageStart}` : ""}]]\n${chunk.content}`,
+      )
+      .join("\n\n");
+
+    return {
+      content,
+      sectionTitle,
+      sectionIndex: Math.min(first.sectionIndex, groupIndex + 1),
+      sectionCount: first.sectionCount,
+      chunkIndex: groupIndex + 1,
+      chunkCount: groups.length,
+      pageStart: first.pageStart,
+      targetItems: Math.max(1, Math.min(MAX_ITEMS_PER_CHUNK, groupBudgets[groupIndex] || 1)),
+    };
+  });
 }
 
 async function parallelLimit<T>(tasks: (() => Promise<T>)[], limit: number): Promise<T[]> {
@@ -1133,6 +1180,7 @@ serve(async (req) => {
     const allCards: FlashcardGen[] = [];
     let generatedTitle = title || "Studio";
     let completedCount = 0;
+    let generatedSoFar = 0;
     console.log(`Chunk plan: ${nChunks} units, target ${totalTargetItems} items, sections ${new Set(chunkPlan.map((chunk) => chunk.sectionTitle)).size}`);
 
     const chunkTasks = chunkPlan.map((plan, idx) => async () => {
@@ -1185,7 +1233,7 @@ serve(async (req) => {
     if (jobId) {
       progressInterval = setInterval(async () => {
         try {
-          const soFar = type === "flashcards" ? allCards.length : allQuestions.length;
+          const soFar = generatedSoFar;
           const elapsed = Date.now() - startTime;
           const etaMs = completedCount > 0 ? Math.round((elapsed / completedCount) * (nChunks - completedCount)) : null;
           const eta = etaMs ? ` · ~${Math.max(1, Math.ceil(etaMs / 1000))}s` : "";
@@ -1206,6 +1254,7 @@ serve(async (req) => {
 
     const wrappedTasks = chunkTasks.map((fn) => async () => {
       const r = await fn();
+      generatedSoFar += type === "flashcards" ? r.cards.length : r.questions.length;
       completedCount++;
       return r;
     });
